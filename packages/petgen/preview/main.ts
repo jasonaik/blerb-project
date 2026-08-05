@@ -51,7 +51,13 @@ function buildWorld(w: number, h: number): World {
   return {
     rev: worldRev,
     bounds: { x: 0, y: 0, w, h },
+    // A single "screen" the size of the page, with climbable outer edges.
+    regions: [{ x: 0, y: 0, w, h }],
     platforms,
+    walls: [
+      { id: 'wallL', x: 0, y0: 0, y1: h - 8, side: 1 },
+      { id: 'wallR', x: w, y0: 0, y1: h - 8, side: -1 },
+    ],
     gravity: 900,
     reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
   };

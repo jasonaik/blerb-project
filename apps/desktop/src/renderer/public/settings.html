@@ -64,6 +64,12 @@
         <span class="val" id="petScaleVal">2×</span>
       </div>
       <div class="row">
+        <label for="climbing">Can climb walls
+          <span class="hint">Clings to the outer edges of the desktop, and climbs between stacked monitors.</span>
+        </label>
+        <input type="checkbox" id="climbing" />
+      </div>
+      <div class="row">
         <label for="debugOverlay">Debug overlay
           <span class="hint">Draws the platforms the pet believes in. Useful, unglamorous.</span>
         </label>
@@ -78,7 +84,7 @@
 
     <script>
       const $ = (id) => document.getElementById(id);
-      const bools = ['petVisible', 'captureProtection', 'launchAtLogin', 'debugOverlay'];
+      const bools = ['petVisible', 'captureProtection', 'launchAtLogin', 'climbing', 'debugOverlay'];
 
       function render(s) {
         for (const k of bools) $(k).checked = s[k];

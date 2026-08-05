@@ -22,9 +22,16 @@ That opens a browser page with the pet walking around on a floor and some ledges
 pnpm desktop
 ```
 
-Tray icon → settings, recenter, quit. Right-click the pet for the same menu. Drag the pet to drop it on a window ledge (it can't climb; being carried is how it gets up there).
+One overlay window per display; the pet roams all of them. Tray icon → settings, recenter, quit. Right-click the pet for the same menu. Drag it anywhere — including onto another monitor — and it falls from wherever you drop it. It climbs the outer edges of the desktop on its own; window ledges it can only reach by being carried, since it can't jump.
 
-Diagnostic env vars: `BLERB_DEBUG=1` logs each world scan (platform ids + coordinates), `BLERB_SOFTWARE=1` disables GPU compositing, `BLERB_ALLOW_CAPTURE=1` makes the pet visible to screen capture so it can be verified in a screenshot.
+Diagnostic env vars:
+
+| | |
+|---|---|
+| `BLERB_DEBUG=1` | log every world scan (screens, floors, walls) and each pet state change |
+| `BLERB_CLIMBY=1` | climb at every wall instead of ~45% of the time — exercises the multi-monitor path without waiting on dice |
+| `BLERB_SOFTWARE=1` | disable GPU compositing |
+| `BLERB_ALLOW_CAPTURE=1` | let screen capture see the pet, so it can be verified in a screenshot |
 
 The preview aliases `@blerb/*` to their **sources**, so edits to the sim are live without a build step. This is the inner loop — use it.
 
@@ -112,10 +119,16 @@ Determinism is the point: `@blerb/core` given the same (seed, dt sequence, world
 
 | | Sim runs in | World sampled by | Rate |
 |---|---|---|---|
-| Electron | renderer | main (koffi window walk) | world ~3/s, sim fixed 60Hz substeps, paint 60fps |
-| petgen preview | the page | the page | same |
+| Electron | **main** | main (koffi window walk) | world ~3/s, sim fixed 60Hz substeps, parks when idle |
+| petgen preview | the page | the page | RAF, parks when idle |
 
-**`RenderFrame` never crosses a process boundary. `World` and `PetEvent` do.** That's why `World` is a flat, diffable ~1KB snapshot rather than a live object graph — it has to survive structured clone over IPC several times a second.
+**`RenderFrame` never crosses a process boundary. `World`, `PetEvent` and `PetState` do.**
+
+The sim lives in **main**, not in a renderer, because there is one pet and N overlay windows — one per display. Running it per-window would mean N independent pets. Main broadcasts `PetState` (~20 numbers) and each renderer calls `deriveFrame(pack, state)` to build its own `RenderFrame`, so the invariant holds and the windows can't disagree about where the pet is.
+
+The renderers have **no render loop**. They paint on receipt of a state message, and main only sends one when the derived frame actually changes — so an idle pet costs the renderer processes nothing.
+
+**Coordinates are global.** The sim works in one DIP space spanning every monitor; each overlay subtracts its own `display.bounds` origin when drawing. A pet straddling two screens is drawn by both windows and clipped naturally by each — which is what makes crossing seamless.
 
 ---
 
@@ -195,7 +208,22 @@ Seductive, widely repeated, and false or contested. Each has burned someone alre
 
 ---
 
-## 10. Coordinate systems
+## 10. The desktop as a shape
+
+Multi-monitor is not "several worlds", it is **one world with holes in it**.
+
+`World.bounds` is the union of every display and is *not* walkable — two screens of different heights leave dead space inside that box. `World.regions` is the real screens; the pet must always be inside one. `scanner.ts` derives everything else from that list with one rule:
+
+- a **floor** exists along a screen's bottom edge only where no screen lies directly below (so the pet falls through onto the screen beneath)
+- a **wall** exists along a screen's side edge only where no screen sits alongside at that height (so the pet walks across the seam where they touch)
+
+Everything the pet can do between monitors falls out of that: climb the outer edge of the desktop, walk between adjacent screens, drop from an upper screen to a lower one, and never step into dead space.
+
+Two screens rarely line up exactly. When the pet climbs to the top of a wall it checks for a **mantle target** — a platform within 96px above the lip — and hauls itself up. That is what gets it from a laptop onto an external monitor sitting above and offset sideways; without it the pet reaches the corner and is stuck.
+
+Walls carry a `side` (the direction from wall to pet). Climbing rotates the sprite by `side * π/2` about its anchor so its feet meet the surface.
+
+## 11. Coordinate systems
 
 - **World px** = CSS px on the host surface. Origin top-left, **+y down**.
 - **Position is always the pet's ground anchor (its feet)**, never its top-left. Every renderer transform is about this point — that's why squash-and-stretch reads as weight on the floor instead of the sprite sinking into it, and why `anchor` is mandatory in the pack format.
@@ -203,7 +231,7 @@ Seductive, widely repeated, and false or contested. Each has burned someone alre
 
 ---
 
-## 11. Testing
+## 12. Testing
 
 - `@blerb/core` / `@blerb/game`: deterministic given (seed, dt, world, events) → snapshot and property tests. `packages/core/src/sim.test.ts` is the model to follow.
 - Design-contract rules that *can* be tested, **are** — motion budget, no movement while hidden, no fast-forward across an absence, XP monotonicity.
@@ -212,7 +240,7 @@ Seductive, widely repeated, and false or contested. Each has burned someone alre
 
 ---
 
-## 12. IP
+## 13. IP
 
 `packs/quagsire/` is gitignored and **must never be committed or published**. The Pokémon Company explicitly asks people not to use their characters.
 
@@ -220,7 +248,7 @@ The shipped default is `packs/blob` — original art, CC0. The pack-import pipel
 
 ---
 
-## 13. Spike results and known unknowns
+## 14. Spike results and known unknowns
 
 Measured 2026-08-05 on the dev machine: Win11, 1440×900 DIP @ 200% scale (2880×1800 physical), 24 cores, Electron 37.10.3, koffi 2.16.3.
 
@@ -232,15 +260,24 @@ Measured 2026-08-05 on the dev machine: Win11, 1440×900 DIP @ 200% scale (2880�
 
 **Spike B — selective click-through: PARTIAL, needs a human.** Implemented per plan: main-process `screen.getCursorScreenPoint()` poll at 30Hz as source of truth, plus a drag latch so the window stays interactive while the cursor leaves the stale bbox mid-drag. **Cannot be verified without driving a real mouse** — see the user checklist. The fallback if it proves unreliable is a fully click-through pet with tray-only interaction.
 
-**Performance — acceptable, improvable.** Naive full-screen clear+repaint at 60fps cost **53.9% of one core**. Two fixes brought it to **11.7%** (≈0.5% of total CPU on 24 cores), ~420MB RSS across 4 processes:
-  - skip frames whose `RenderFrame` is visually identical (the pet idles at 2fps and is stationary >70% of the time by design)
-  - clear only the union of the pet's previous and current rects, not 5.2 megapixels
-  - park the render loop entirely after ~1/3s idle, ticking the sim on a 100ms timer until something changes
+**Multi-monitor + climbing: PASS, on real mixed-DPI hardware.** Dev machine layout: laptop `0,0 1440×900 @200%` and an external `233,-1080 1920×1080 @100%` — above and offset sideways, so their side edges do *not* line up.
 
-  Remaining split: renderer 5.2%, gpu-process 4.5%, main 2.0%. The gpu-process floor looks inherent to compositing a full-screen transparent always-on-top layer. Worth another pass before v1 — a smaller overlay window that follows the pet would likely remove most of it.
+The scanner derived exactly the right shape: the external's floor spans only `x=1440..2153` (the part not sitting above the laptop), so the region above the laptop is open air the pet falls through. Observed on the live desktop:
+
+```
+walk  on=floor:3080050583:0   @ 1430,852    laptop taskbar
+climb on=wall:3080050583:r:0  @ 1440,852    grabbed the laptop's right edge
+land  on=floor:2439861036:0   @ 1441,-48    mantled onto the external monitor
+```
+
+The mantle (§10) is what made that work — without it the pet climbs 900px to the laptop's top-right corner and is stuck 48px below the external monitor's floor. Screenshot confirmed the second overlay window renders the pet over Chrome on the external display.
+
+**Performance.** Naive full-screen clear+repaint at 60fps cost **53.9% of one core** on one display. After frame-identity skipping, union dirty-rect clears, moving the sim to main, and parking when idle: **9.3% across two displays** (5 processes, ~516MB RSS) — split gpu 3.4%, main 3.4%, renderers 2.0% + 0.4%. The renderers are cheap now because they have no loop at all; they paint on receipt.
+
+The gpu-process floor looks inherent to compositing full-screen transparent always-on-top layers, and now scales with display count. A smaller overlay window that follows the pet would likely remove most of it.
 
 **Still unknown:**
-- Multi-monitor. The overlay is currently **primary display only** — `createOverlayWindow` takes a `Display` and the plan calls for one window per `display.id`, but only one is spawned. Untested on a second monitor, and mixed-DPI is untested.
 - Whether the procedural gait (Phase 4) looks acceptable on real Quagsire art. If it does, the pivot-point rig editor never gets built.
-- Behaviour across sleep/wake and display hotplug.
+- Behaviour across sleep/wake and monitor hotplug *while the pet is mid-climb*. Handled in code (`reconcileWorld` re-settles, and a vanished wall drops the pet) and unit-tested, but not exercised on real hardware.
 - Exclusive-fullscreen games (borderless is handled; true exclusive can't be drawn over by anything and the app hides).
+- Whether a climbing pet on a *third* display, or displays arranged in an L, produces sensible walls. The geometry is general but only two-screen layouts have been observed.

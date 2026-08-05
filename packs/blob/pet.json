@@ -11,5 +11,8 @@
     "idle": { "fps": 2, "frames": [0, 1] },
     "walk": { "fps": 8, "frames": [2, 0, 3, 0], "designSpeed": 40 }
   },
-  "aliases": { "sit": "idle", "sleep": "idle", "fall": "idle", "land": "idle", "stretch": "idle" }
+  "aliases": {
+    "sit": "idle", "sleep": "idle", "fall": "idle", "land": "idle",
+    "stretch": "idle", "climb": "walk", "cling": "idle"
+  }
 }

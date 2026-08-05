@@ -1,23 +1,36 @@
-import { loadPack, type Fetcher } from '@blerb/pack';
-import { createSim, type PetSnapshot, type World } from '@blerb/core';
+import { loadPack, type Fetcher, type ResolvedPack } from '@blerb/pack';
+import { deriveFrame, type PetState, type RenderFrame, type World } from '@blerb/core';
 import { CanvasRenderer, type Ctx2D } from '@blerb/render-canvas';
 
 /**
- * The overlay page: run the sim, paint the pet, report its bbox so main can
- * flip click-through, and let the user pick the pet up and drop it on things.
+ * One overlay window's view of the pet.
  *
- * The window covers the whole display and is click-through except over the
- * pet's pixels, so from the user's side this page *is* the pet.
+ * The sim lives in main and broadcasts `PetState` in GLOBAL desktop
+ * coordinates; this page derives its own `RenderFrame` and subtracts its
+ * display origin to draw. Two consequences worth knowing:
+ *
+ *   - a pet straddling two monitors is drawn by both windows, each clipping
+ *     it naturally at the screen edge, so it crosses seamlessly
+ *   - there is no render loop. Frames arrive when something changes, so an
+ *     idle pet costs this process nothing at all.
  */
 
 const canvas = document.getElementById('stage') as HTMLCanvasElement;
-const snapshotKey = (packId: string) => `blerb:snapshot:${packId}`;
+
+interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Padding for rotation overshoot — the sprite rotates 90° when climbing. */
+const PAD = 24;
 
 async function main(): Promise<void> {
-  const init = await window.blerb.init();
+  let init = await window.blerb.init();
+  let origin = init.origin;
 
-  // fetch() can't touch file: URLs from a file: page; all disk access goes
-  // through the preload's read(), which main restricts to packs/.
   const fetcher: Fetcher = async (url) => {
     try {
       const bytes = await window.blerb.read(url);
@@ -27,36 +40,19 @@ async function main(): Promise<void> {
     }
   };
 
-  const pack = await loadPack(fetcher, `${init.packDir}/pet.json`);
+  const pack: ResolvedPack = await loadPack(fetcher, `${init.packDir}/pet.json`);
   const atlasBytes = await window.blerb.read(pack.atlasUrl);
   const atlas = await createImageBitmap(new Blob([atlasBytes as BlobPart]));
 
-  let snapshot: PetSnapshot | undefined;
-  try {
-    const raw = localStorage.getItem(snapshotKey(pack.id));
-    if (raw) snapshot = JSON.parse(raw) as PetSnapshot;
-  } catch {
-    /* fresh start */
-  }
-
-  const sim = createSim({
-    pack,
-    world: init.world,
-    ...(snapshot ? { snapshot } : {}),
-  });
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('no 2d context');
+  const renderer = new CanvasRenderer({ ctx: ctx as unknown as Ctx2D, pack, atlas, dpr: devicePixelRatio || 1 });
 
   let world: World = init.world;
   let debug = init.settings.debugOverlay;
   let petScale = init.settings.petScale;
-
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('no 2d context');
-  const renderer = new CanvasRenderer({
-    ctx: ctx as unknown as Ctx2D,
-    pack,
-    atlas,
-    dpr: devicePixelRatio || 1,
-  });
+  let state: PetState | null = init.state;
+  let prevRect: Rect | null = null;
 
   function resize(): void {
     const dpr = devicePixelRatio || 1;
@@ -66,36 +62,105 @@ async function main(): Promise<void> {
     canvas.style.height = `${innerHeight}px`;
     ctx!.setTransform(dpr, 0, 0, dpr, 0, 0);
     renderer.setDpr(dpr);
+    prevRect = null;
+    paint();
   }
   resize();
   addEventListener('resize', resize);
+  new ResizeObserver(resize).observe(document.documentElement);
 
+  /** Global desktop coords → this window's local CSS px. */
+  function toLocal(f: RenderFrame): RenderFrame {
+    return { ...f, x: f.x - origin.x, y: f.y - origin.y, scale: f.scale * petScale };
+  }
+
+  function spriteRect(f: RenderFrame): Rect | null {
+    const cell = pack.cells.get(f.cellId);
+    if (!cell) return null;
+    // A rotated sprite's footprint is not its cell box, so pad generously and
+    // use the larger dimension both ways rather than doing the trig.
+    const s = Math.max(cell.w, cell.h) * f.scale;
+    return { x: f.x - s / 2 - PAD, y: f.y - s - PAD, w: s + PAD * 2, h: s * 2 + PAD * 2 };
+  }
+
+  function union(a: Rect, b: Rect): Rect {
+    const x = Math.min(a.x, b.x);
+    const y = Math.min(a.y, b.y);
+    return { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y };
+  }
+
+  function paint(): void {
+    if (!state) return;
+    const f = toLocal(deriveFrame(pack, state));
+    const rect = spriteRect(f);
+
+    if (debug) {
+      renderer.clear(innerWidth, innerHeight);
+      renderer.draw(f);
+      renderer.drawDebug(localWorld(), f);
+    } else {
+      const u = prevRect && rect ? union(prevRect, rect) : (rect ?? prevRect);
+      if (u) ctx!.clearRect(u.x, u.y, u.w, u.h);
+      renderer.draw(f);
+    }
+    prevRect = rect;
+  }
+
+  /** Debug lines are drawn in window-local space too. */
+  function localWorld(): World {
+    return {
+      ...world,
+      platforms: world.platforms.map((p) => ({ ...p, x0: p.x0 - origin.x, x1: p.x1 - origin.x, y: p.y - origin.y })),
+      walls: world.walls.map((w) => ({ ...w, x: w.x - origin.x, y0: w.y0 - origin.y, y1: w.y1 - origin.y })),
+    };
+  }
+
+  window.blerb.onInit((next) => {
+    // Sent when displays are rearranged: this window may now be a different
+    // monitor, so its origin changes.
+    init = next;
+    origin = next.origin;
+    world = next.world;
+    prevRect = null;
+    renderer.clear(innerWidth, innerHeight);
+    paint();
+  });
+  window.blerb.onPetState((s) => {
+    state = s;
+    paint();
+  });
   window.blerb.onWorld((w) => {
     world = w;
-    sim.dispatch({ k: 'world', world: w });
+    if (debug) paint();
   });
-  window.blerb.onVisibility((v) => {
-    sim.dispatch(v.hidden ? { k: 'hide', reason: v.reason } : { k: 'show' });
+  window.blerb.onVisibility(() => {
+    renderer.clear(innerWidth, innerHeight);
+    prevRect = null;
   });
   window.blerb.onSettings((s) => {
     debug = s.debugOverlay;
     petScale = s.petScale;
+    prevRect = null;
+    renderer.clear(innerWidth, innerHeight);
+    paint();
   });
-  window.blerb.onCommand((c) => sim.dispatch({ k: 'command', name: c.name }));
 
   // ---- pick up & drop -----------------------------------------------------
   // Main only routes mouse events here while the cursor is over the pet, so a
-  // pointerdown is by construction a grab. The drag latch keeps the window
-  // interactive while the cursor is outside the (stale) bbox mid-drag.
+  // pointerdown is by construction a grab. Coordinates go back out as GLOBAL
+  // so the pet can be carried from one monitor to another.
   let dragging = false;
+  const place = (e: PointerEvent) =>
+    window.blerb.place({ x: e.clientX + origin.x, y: e.clientY + origin.y });
+
   addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
     dragging = true;
     window.blerb.drag(true);
-    sim.dispatch({ k: 'command', name: 'place', x: e.clientX, y: e.clientY });
+    place(e);
   });
   addEventListener('pointermove', (e) => {
-    if (dragging) sim.dispatch({ k: 'command', name: 'place', x: e.clientX, y: e.clientY });
+    if (dragging) place(e);
   });
   const endDrag = () => {
     if (!dragging) return;
@@ -104,144 +169,13 @@ async function main(): Promise<void> {
   };
   addEventListener('pointerup', endDrag);
   addEventListener('pointercancel', endDrag);
-
   addEventListener('contextmenu', (e) => {
     e.preventDefault();
     window.blerb.menu();
   });
 
-  // ---- reporting ----------------------------------------------------------
-  setInterval(() => {
-    const f = sim.frame();
-    const cell = pack.cells.get(f.cellId);
-    if (!cell) return;
-    window.blerb.bbox({
-      x: f.x - cell.anchor[0] * petScale,
-      y: f.y - cell.anchor[1] * petScale,
-      w: cell.w * petScale,
-      h: cell.h * petScale,
-    });
-  }, 100);
-
-  setInterval(() => {
-    try {
-      localStorage.setItem(snapshotKey(pack.id), JSON.stringify(sim.serialize()));
-    } catch {
-      /* storage full — the pet just respawns next launch */
-    }
-  }, 5000);
-
-  // ---- the loop -----------------------------------------------------------
-  //
-  // This window is the size of the display, so a naive "clear everything and
-  // repaint" at 60fps costs ~54% of a core at idle — measured, not guessed.
-  // Two fixes, both of which matter:
-  //
-  //   1. Skip frames that are visually identical. The pet idles at 2fps and
-  //      spends >70% of its life stationary (design contract rule 4), so most
-  //      frames genuinely have nothing to say.
-  //   2. Clear only the union of where the pet was and where it now is, rather
-  //      than 5.2 megapixels of mostly-empty canvas.
-
-  interface Rect { x: number; y: number; w: number; h: number }
-
-  /** Padding for rotation/squash overshoot, plus a safety margin. */
-  const PAD = 12;
-
-  function spriteRect(f: ReturnType<typeof sim.frame>): Rect | null {
-    const cell = pack.cells.get(f.cellId);
-    if (!cell) return null;
-    const w = cell.w * f.scale;
-    const h = cell.h * f.scale;
-    return {
-      x: f.x - cell.anchor[0] * f.scale - PAD,
-      y: f.y - cell.anchor[1] * f.scale - PAD,
-      w: w + PAD * 2,
-      h: h + PAD * 2,
-    };
-  }
-
-  const frameKey = (f: ReturnType<typeof sim.frame>) =>
-    `${f.cellId}|${f.x.toFixed(1)}|${f.y.toFixed(1)}|${f.facing}|${f.scale}|` +
-    `${f.opacity}|${f.rotation.toFixed(3)}|${f.squash.sx.toFixed(3)}|${f.squash.sy.toFixed(3)}`;
-
-  let prevRect: Rect | null = null;
-  let prevKey = '';
-  let last = performance.now();
-  let idleFrames = 0;
-  let parked = false;
-
-  /**
-   * Consecutive unchanged frames before we stop asking for animation frames.
-   * ~1/3 second: long enough not to thrash on the pause between walk cycles,
-   * short enough that a sleeping pet parks almost immediately.
-   */
-  const PARK_AFTER = 20;
-  /** Sim tick while parked. Coarse on purpose — nothing is being drawn. */
-  const PARKED_MS = 100;
-
-  function schedule(): void {
-    if (parked) window.setTimeout(() => tick(performance.now()), PARKED_MS);
-    else requestAnimationFrame(tick);
-  }
-
-  function tick(now: number): void {
-    const dt = now - last;
-    last = now;
-
-    sim.step(dt);
-    const frame = sim.frame();
-    frame.scale *= petScale;
-
-    const key = frameKey(frame);
-    if (key === prevKey && !debug) {
-      // Nothing to draw. After a while stop requesting animation frames
-      // entirely — an idle pet should cost roughly nothing, and RAF at 60Hz
-      // for a sprite that moves twice a second is most of the bill.
-      if (++idleFrames >= PARK_AFTER) parked = true;
-      schedule();
-      return;
-    }
-    idleFrames = 0;
-    parked = false;
-    prevKey = key;
-
-    const rect = spriteRect(frame);
-
-    if (debug) {
-      // Dev only — platform lines span the display, so partial clears don't help.
-      renderer.clear(innerWidth, innerHeight);
-      renderer.draw(frame);
-      renderer.drawDebug(world, frame);
-    } else {
-      // Clear the union of old and new positions in one rect. Two clears would
-      // also work, but a union is cheaper and the pet never moves far in 16ms.
-      const u = prevRect && rect ? unionRect(prevRect, rect) : (rect ?? prevRect);
-      if (u) ctx!.clearRect(u.x, u.y, u.w, u.h);
-      renderer.draw(frame);
-    }
-
-    prevRect = rect;
-    schedule();
-  }
-
-  function unionRect(a: Rect, b: Rect): Rect {
-    const x = Math.min(a.x, b.x);
-    const y = Math.min(a.y, b.y);
-    return { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y };
-  }
-
-  // A resize invalidates the backing store, so the next frame must repaint
-  // unconditionally rather than being skipped as "unchanged".
-  addEventListener('resize', () => {
-    prevKey = '';
-    prevRect = null;
-  });
-
-  requestAnimationFrame(tick);
-  console.log('[blerb] render loop up (parks when idle)');
-
-  console.log(`[blerb] pet "${pack.name}" up at scale ${petScale}`);
+  paint();
+  console.log(`[blerb] view up at origin ${origin.x},${origin.y}`);
 }
 
 main().catch((err) => console.error('[blerb overlay]', err));

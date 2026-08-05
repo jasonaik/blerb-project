@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { resolvePack } from '@blerb/pack';
 import { createSim, simpleWorld } from './sim.js';
-import type { PetState } from './types.js';
+import type { PetState, World } from './types.js';
 
-const testPack = () =>
+const testPack = (behavior: Record<string, unknown> = {}) =>
   resolvePack({
     format: 'blerb-pet/1',
     id: 'test',
@@ -16,6 +16,8 @@ const testPack = () =>
       fall: { fps: 6, frames: [1] },
       land: { fps: 12, loop: false, frames: [1, 0] },
     },
+    aliases: { climb: 'walk', cling: 'idle', sit: 'idle', sleep: 'idle', stretch: 'idle' },
+    behavior,
   });
 
 /** Deterministic dt sequence with realistic jitter — not a constant. */
@@ -211,6 +213,278 @@ describe('design contract', () => {
     sim.step(60 * 60 * 1000);
     expect(sim.state.x).toBeGreaterThanOrEqual(0);
     expect(sim.state.x).toBeLessThanOrEqual(800);
+  });
+});
+
+describe('climbing', () => {
+  const alwaysClimbs = () => testPack({ climbiness: 1, can: { fall: false } });
+
+  /**
+   * Put the pet on the ground near `x` and set it walking toward `dir`.
+   * Random-walking to a wall takes tens of simulated seconds and often doesn't
+   * happen at all — driving it there makes these tests about climbing rather
+   * than about luck.
+   */
+  function walkAt(sim: ReturnType<typeof createSim>, x: number, y: number, dir: 1 | -1) {
+    sim.dispatch({ k: 'command', name: 'place', x, y });
+    for (const dt of dtSequence(400)) {
+      sim.step(dt);
+      if (sim.state.standingOn !== null) break;
+    }
+    sim.dispatch({ k: 'command', name: 'come-here', x: dir > 0 ? 1e6 : -1e6 });
+  }
+
+  it('climbs a wall instead of turning at the screen edge', () => {
+    const sim = createSim({ pack: alwaysClimbs(), world: simpleWorld(800, 400), seed: 51 });
+    walkAt(sim, 780, 400, 1);
+
+    for (const dt of dtSequence(600)) {
+      sim.step(dt);
+      if (sim.state.climbingOn !== null) break;
+    }
+    expect(sim.state.climbingOn).toBe('wr');
+    expect(sim.state.x).toBe(800);
+    expect(sim.state.behavior).toBe('climb');
+  });
+
+  it('gains height while climbing', () => {
+    const sim = createSim({ pack: alwaysClimbs(), world: simpleWorld(800, 400), seed: 53 });
+    walkAt(sim, 780, 400, 1);
+
+    let minY = Infinity;
+    for (const dt of dtSequence(4000)) {
+      sim.step(dt);
+      if (sim.state.climbingOn !== null) minY = Math.min(minY, sim.state.y);
+      expect(sim.state.y).toBeGreaterThanOrEqual(0);
+    }
+    expect(minY).toBeLessThan(340); // meaningfully up the wall from y=400
+  });
+
+  it('rotates the sprite so its feet meet the wall', () => {
+    const sim = createSim({ pack: alwaysClimbs(), world: simpleWorld(800, 400), seed: 57 });
+    walkAt(sim, 780, 400, 1);
+    for (const dt of dtSequence(600)) {
+      sim.step(dt);
+      if (sim.state.climbingOn !== null) break;
+    }
+    // Right-hand wall (side -1) => rotate -90deg, so "down" becomes "right".
+    expect(sim.frame().rotation).toBeCloseTo(-Math.PI / 2, 5);
+  });
+
+  it('climbs the left wall too, rotated the other way', () => {
+    const sim = createSim({ pack: alwaysClimbs(), world: simpleWorld(800, 400), seed: 58 });
+    walkAt(sim, 20, 400, -1);
+    for (const dt of dtSequence(600)) {
+      sim.step(dt);
+      if (sim.state.climbingOn !== null) break;
+    }
+    expect(sim.state.climbingOn).toBe('wl');
+    expect(sim.state.x).toBe(0);
+    expect(sim.frame().rotation).toBeCloseTo(Math.PI / 2, 5);
+  });
+
+  it('falls if the wall it was climbing disappears', () => {
+    const sim = createSim({ pack: alwaysClimbs(), world: simpleWorld(800, 400), seed: 59 });
+    walkAt(sim, 780, 400, 1);
+    for (const dt of dtSequence(600)) {
+      sim.step(dt);
+      if (sim.state.climbingOn !== null) break;
+    }
+    expect(sim.state.climbingOn).not.toBeNull();
+
+    sim.dispatch({ k: 'world', world: { ...simpleWorld(800, 400), rev: 2, walls: [] } });
+    expect(sim.state.behavior).toBe('fall');
+    expect(sim.state.climbingOn).toBeNull();
+  });
+
+  it('eventually comes back down and ends up on the ground', () => {
+    const sim = createSim({ pack: testPack({ climbiness: 1 }), world: simpleWorld(800, 400), seed: 60 });
+    walkAt(sim, 780, 400, 1);
+    for (const dt of dtSequence(60_000)) sim.step(dt);
+    // Whatever route it took — climbing down, or letting go — it is not stuck
+    // clinging forever, and it is inside the screen.
+    expect(sim.state.y).toBeLessThanOrEqual(400);
+    expect(sim.state.x).toBeLessThanOrEqual(800);
+  });
+
+  it('never climbs when the pack says it cannot', () => {
+    const pack = testPack({ can: { climb: false }, climbiness: 1 });
+    const sim = createSim({ pack, world: simpleWorld(800, 400), seed: 61 });
+    walkAt(sim, 780, 400, 1);
+    for (const dt of dtSequence(20_000)) {
+      sim.step(dt);
+      expect(sim.state.climbingOn).toBeNull();
+    }
+  });
+});
+
+describe('multi-display', () => {
+  /** Two 800x400 screens side by side, second one offset down by 100. */
+  const twoScreens = (rev = 1): World => ({
+    rev,
+    bounds: { x: 0, y: 0, w: 1600, h: 500 },
+    regions: [
+      { x: 0, y: 0, w: 800, h: 400 },
+      { x: 800, y: 100, w: 800, h: 400 },
+    ],
+    platforms: [
+      { id: 'floorA', x0: 0, x1: 800, y: 400, kind: 'floor', passthrough: false },
+      { id: 'floorB', x0: 800, x1: 1600, y: 500, kind: 'floor', passthrough: false },
+    ],
+    // Outer edges only; the seam at x=800 is open between y=100 and y=400.
+    walls: [
+      { id: 'wl', x: 0, y0: 0, y1: 400, side: 1 },
+      { id: 'wr', x: 1600, y0: 100, y1: 500, side: -1 },
+      { id: 'seamTop', x: 800, y0: 0, y1: 100, side: -1 },
+    ],
+    gravity: 900,
+    reducedMotion: false,
+  });
+
+  /** Screen B stacked directly above screen A, walls contiguous on the right. */
+  const stacked = (rev = 1): World => ({
+    rev,
+    bounds: { x: 0, y: 0, w: 800, h: 800 },
+    regions: [
+      { x: 0, y: 0, w: 800, h: 400 },
+      { x: 0, y: 400, w: 800, h: 400 },
+    ],
+    platforms: [{ id: 'floorLower', x0: 0, x1: 800, y: 800, kind: 'floor', passthrough: false }],
+    walls: [
+      { id: 'wrUpper', x: 800, y0: 0, y1: 400, side: -1 },
+      { id: 'wrLower', x: 800, y0: 400, y1: 800, side: -1 },
+    ],
+    gravity: 900,
+    reducedMotion: false,
+  });
+
+  it('does not walk into the dead space between offset monitors', () => {
+    const sim = createSim({ pack: testPack({ climbiness: 0 }), world: twoScreens(), seed: 71 });
+    for (const dt of dtSequence(40_000)) {
+      sim.step(dt);
+      const { x, y } = sim.state;
+      const onA = x >= -2 && x <= 802 && y >= -2 && y <= 402;
+      const onB = x >= 798 && x <= 1602 && y >= 98 && y <= 502;
+      expect(onA || onB).toBe(true);
+    }
+  });
+
+  it('crosses from one screen to the next along a shared floor', () => {
+    const world: World = {
+      ...twoScreens(),
+      regions: [
+        { x: 0, y: 0, w: 800, h: 400 },
+        { x: 800, y: 0, w: 800, h: 400 },
+      ],
+      platforms: [{ id: 'floor', x0: 0, x1: 1600, y: 400, kind: 'floor', passthrough: false }],
+      walls: [
+        { id: 'wl', x: 0, y0: 0, y1: 400, side: 1 },
+        { id: 'wr', x: 1600, y0: 0, y1: 400, side: -1 },
+      ],
+    };
+    const sim = createSim({ pack: testPack({ climbiness: 0 }), world, seed: 73 });
+    // Start just short of the seam and drive it across, rather than hoping a
+    // random walk covers 800px.
+    sim.dispatch({ k: 'command', name: 'place', x: 760, y: 400 });
+    for (const dt of dtSequence(400)) {
+      sim.step(dt);
+      if (sim.state.standingOn !== null) break;
+    }
+    sim.dispatch({ k: 'command', name: 'come-here', x: 1e6 });
+
+    let maxX = 0;
+    for (const dt of dtSequence(3000)) {
+      sim.step(dt);
+      maxX = Math.max(maxX, sim.state.x);
+    }
+    expect(maxX).toBeGreaterThan(830); // crossed the seam onto screen B
+    expect(sim.state.y).toBe(400); // and stayed on the shared floor
+  });
+
+  it('climbs from the lower screen onto the one above it', () => {
+    const pack = testPack({ climbiness: 1, can: { fall: false }, speed: { climb: 200 } });
+    const sim = createSim({ pack, world: stacked(), seed: 77 });
+    sim.dispatch({ k: 'command', name: 'place', x: 780, y: 800 });
+    for (const dt of dtSequence(400)) {
+      sim.step(dt);
+      if (sim.state.standingOn !== null) break;
+    }
+    sim.dispatch({ k: 'command', name: 'come-here', x: 1e6 });
+
+    let reachedUpper = false;
+    for (const dt of dtSequence(6000)) {
+      sim.step(dt);
+      if (sim.state.climbingOn === 'wrUpper') reachedUpper = true;
+    }
+    expect(reachedUpper).toBe(true);
+  });
+
+  /**
+   * The real layout on the dev machine: a 1440x900 laptop at 0,0 and a
+   * 1920x1080 external above it, offset right by 233. Their side edges do NOT
+   * line up, so climbing between them needs the mantle.
+   */
+  const offsetStack = (rev = 1): World => ({
+    rev,
+    bounds: { x: 0, y: -1080, w: 2153, h: 1980 },
+    regions: [
+      { x: 0, y: 0, w: 1440, h: 900 },
+      { x: 233, y: -1080, w: 1920, h: 1080 },
+    ],
+    platforms: [
+      { id: 'floorLaptop', x0: 0, x1: 1440, y: 852, kind: 'floor', passthrough: false },
+      // Only where the laptop is not below it.
+      { id: 'floorExternal', x0: 1440, x1: 2153, y: -48, kind: 'floor', passthrough: false },
+    ],
+    walls: [
+      { id: 'laptopR', x: 1440, y0: 0, y1: 900, side: -1 },
+      { id: 'externalR', x: 2153, y0: -1080, y1: 0, side: -1 },
+    ],
+    gravity: 900,
+    reducedMotion: false,
+  });
+
+  it('mantles from a lower screen onto a higher one whose edges do not line up', () => {
+    const pack = testPack({ climbiness: 1, can: { fall: false }, speed: { climb: 400 } });
+    const sim = createSim({ pack, world: offsetStack(), seed: 91 });
+    sim.dispatch({ k: 'command', name: 'place', x: 1420, y: 852 });
+    for (const dt of dtSequence(400)) {
+      sim.step(dt);
+      if (sim.state.standingOn !== null) break;
+    }
+    sim.dispatch({ k: 'command', name: 'come-here', x: 1e6 });
+
+    let mantled = false;
+    for (const dt of dtSequence(6000)) {
+      sim.step(dt);
+      if (sim.state.standingOn === 'floorExternal') mantled = true;
+    }
+    expect(mantled).toBe(true);
+  });
+
+  it('falls from the upper screen down onto the lower one', () => {
+    const pack = testPack({ climbiness: 0 });
+    const world = stacked();
+    // Drop the pet in mid-air on the upper screen.
+    const sim = createSim({ pack, world, seed: 79 });
+    sim.dispatch({ k: 'command', name: 'place', x: 400, y: 50 });
+
+    for (const dt of dtSequence(4000)) sim.step(dt);
+    // Only floor is at the bottom of the LOWER screen — nothing stops it at 400.
+    expect(sim.state.y).toBe(800);
+    expect(sim.state.standingOn).toBe('floorLower');
+  });
+
+  it('re-settles onto real screen when a monitor is unplugged', () => {
+    const pack = testPack({ climbiness: 0 });
+    const sim = createSim({ pack, world: twoScreens(), seed: 83 });
+    sim.dispatch({ k: 'command', name: 'place', x: 1400, y: 480 });
+    for (const dt of dtSequence(2000)) sim.step(dt);
+    expect(sim.state.x).toBeGreaterThan(800);
+
+    sim.dispatch({ k: 'world', world: { ...simpleWorld(800, 400), rev: 99 } });
+    expect(sim.state.x).toBeLessThanOrEqual(800);
+    expect(sim.state.y).toBeLessThanOrEqual(400);
   });
 });
 

@@ -8,6 +8,7 @@ export const DEFAULTS: Settings = {
   captureProtection: true,
   debugOverlay: false,
   launchAtLogin: false,
+  climbing: true,
   petScale: 2,
   pack: 'blob',
 };

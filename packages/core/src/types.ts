@@ -30,9 +30,30 @@ export interface Platform {
   x0: number;
   x1: number;
   y: number;
-  kind: 'floor' | 'ledge' | 'wall';
+  kind: 'floor' | 'ledge';
   /** Can the pet drop through it from above. */
   passthrough: boolean;
+}
+
+/**
+ * A vertical surface the pet can cling to and climb.
+ *
+ * Only exists where there is nothing to walk onto — the outer edge of the
+ * desktop, not the seam between two adjacent monitors. That distinction is
+ * the whole multi-monitor feature: where screens touch, the pet walks across;
+ * where the desktop ends, it climbs.
+ */
+export interface Wall {
+  id: string;
+  /** The surface's x. The pet's anchor sits exactly here while clinging. */
+  x: number;
+  y0: number;
+  y1: number;
+  /**
+   * Which side of the wall the pet is on: -1 = pet is to the left (a
+   * right-hand wall), +1 = pet is to the right (a left-hand wall).
+   */
+  side: -1 | 1;
 }
 
 /**
@@ -44,16 +65,41 @@ export interface Platform {
 export interface World {
   /** Monotonic. Bumped whenever bounds/platforms change; the sim re-clamps on change. */
   rev: number;
+  /**
+   * Bounding box of every region. On a multi-monitor desktop this is the union
+   * and may contain dead space — bounds alone is NOT a valid walkable area.
+   * Use `regions` for containment.
+   */
   bounds: Rect;
+  /**
+   * The actual screens, in global coordinates. The pet must always be inside
+   * one of these. Two monitors of different heights, or offset vertically,
+   * leave L-shaped gaps in `bounds` that are not real screen — walking into
+   * them would put the pet somewhere the user cannot see.
+   */
+  regions: Rect[];
   /** Sorted by y ascending. The host guarantees the ordering; the sim relies on it. */
   platforms: Platform[];
+  /** Climbable vertical surfaces. Empty is fine; the pet just turns around. */
+  walls: Wall[];
   gravity: number;
   reducedMotion: boolean;
 }
 
 export type HideReason = 'reduced-motion' | 'fullscreen' | 'presenting' | 'manual';
 
-export type BehaviorId = 'idle' | 'walk' | 'sit' | 'sleep' | 'fall' | 'land' | 'stretch';
+export type BehaviorId =
+  | 'idle'
+  | 'walk'
+  | 'sit'
+  | 'sleep'
+  | 'fall'
+  | 'land'
+  | 'stretch'
+  /** Moving along a wall, up or down. */
+  | 'climb'
+  /** Attached to a wall but stationary — deciding, or resting. */
+  | 'cling';
 
 export type PetEvent =
   | { k: 'world'; world: World }
@@ -76,8 +122,14 @@ export interface PetState {
   vx: number;
   vy: number;
   facing: -1 | 1;
-  /** Platform.id, or null while airborne. */
+  /** Platform.id, or null while airborne or climbing. */
   standingOn: string | null;
+  /** Wall.id while clinging/climbing, else null. Mutually exclusive with standingOn. */
+  climbingOn: string | null;
+  /** Cached Wall.side, so a frame can be derived without the World. */
+  climbSide: -1 | 1;
+  /** Vertical direction while climbing: -1 up, +1 down. */
+  climbDir: -1 | 1;
 
   behavior: BehaviorId;
   /** ms spent in the current behavior. */
@@ -89,6 +141,8 @@ export interface PetState {
   anim: string;
   /** ms into the current animation. */
   animT: number;
+  /** Total simulated time, ms. Carried in state so any process can derive a frame. */
+  simT: number;
 
   /**
    * Distance travelled, world px. Drives the walk cycle's phase so the feet

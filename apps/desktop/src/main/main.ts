@@ -1,65 +1,124 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, screen, Tray } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, screen, Tray, type Display } from 'electron';
 import { readFile } from 'node:fs/promises';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
-import type { World } from '@blerb/core';
-import { CH, type OverlayCommand, type PetBbox, type Settings } from '../shared/ipc';
+import { deriveFrame, type PetSnapshot, type PetState, type World } from '@blerb/core';
+import { CH, type OverlayCommand, type Settings } from '../shared/ipc';
 import { loadSettings, saveSettings } from './settings';
 import { createScanner, fallbackWorld, type Scanner } from './scanner';
 import { createOverlayWindow, createSettingsWindow } from './windows';
+import { createPetHost, loadPackSync, type PetHost } from './pet';
 
 /**
  * Env toggles (dev/diagnostics):
- *   BLERB_SOFTWARE=1        disable GPU compositing (the Spike A fallback)
- *   BLERB_ALLOW_CAPTURE=1   let screen capture see the pet (for automated
- *                           verification — capture-protection is default ON)
+ *   BLERB_DEBUG=1           log each world scan (screens, floors, walls)
+ *   BLERB_SOFTWARE=1        disable GPU compositing
+ *   BLERB_ALLOW_CAPTURE=1   let screen capture see the pet, for verification
  */
 
 // Windows occlusion tracking treats a fully-transparent always-on-top window
 // as occluded whenever a maximized window sits under it, which stops RAF in
-// the renderer and freezes the pet. Known Electron-overlay requirement.
+// the renderer and freezes the pet.
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 
 if (process.env.BLERB_SOFTWARE) app.disableHardwareAcceleration();
+if (!app.requestSingleInstanceLock()) app.quit();
 
-if (!app.requestSingleInstanceLock()) {
-  app.quit();
-}
-
-// Dev layout: app path is apps/desktop, packs live at the repo root.
 const repoRoot = resolve(app.getAppPath(), '..', '..');
 const packsRoot = join(repoRoot, 'packs');
 
 let settings = loadSettings();
-let overlay: BrowserWindow | null = null;
+let pet: PetHost | null = null;
+let scanner: Scanner | null = null;
 let settingsWin: BrowserWindow | null = null;
 let tray: Tray | null = null;
-let scanner: Scanner | null = null;
+
+/** One overlay per display, keyed by display.id — never by array index. */
+const overlays = new Map<number, { win: BrowserWindow; display: Display }>();
 
 let lastWorld: World | null = null;
-let petBbox: PetBbox | null = null;
 let dragLatch = false;
-let cursorInside = false;
+let interactiveWin: BrowserWindow | null = null;
 let hiddenByFullscreen = false;
 let quitting = false;
 
-const effectiveProtection = () =>
-  settings.captureProtection && !process.env.BLERB_ALLOW_CAPTURE;
+const effectiveProtection = () => settings.captureProtection && !process.env.BLERB_ALLOW_CAPTURE;
+const snapshotFile = () => join(app.getPath('userData'), 'pet-snapshot.json');
+
+// ------------------------------------------------------------------ overlays
+
+function spawnOverlays(): void {
+  const wanted = new Set(screen.getAllDisplays().map((d) => d.id));
+
+  for (const [id, entry] of overlays) {
+    if (!wanted.has(id)) {
+      entry.win.destroy();
+      overlays.delete(id);
+    }
+  }
+
+  for (const display of screen.getAllDisplays()) {
+    const existing = overlays.get(display.id);
+    if (existing) {
+      existing.display = display;
+      existing.win.setBounds(display.bounds);
+      existing.win.webContents.send(CH.overlayInit, initPayload(display));
+      continue;
+    }
+
+    const win = createOverlayWindow(display, { contentProtection: effectiveProtection() });
+    overlays.set(display.id, { win, display });
+
+    win.webContents.on('console-message', (_e, _l, message) => console.log('[overlay]', message));
+    win.webContents.on('did-finish-load', () => pushVisibility());
+    win.on('closed', () => {
+      overlays.delete(display.id);
+      if (!quitting && overlays.size === 0) quit();
+    });
+  }
+
+  // Exclude our own windows from the platform walk, or the pet stands on
+  // its own overlay — which is display-sized and passes every other filter.
+  scanner?.setSelfHwnds(
+    [...overlays.values()].map((o) => {
+      const h = o.win.getNativeWindowHandle();
+      return String(h.length >= 8 ? h.readBigUInt64LE(0) : BigInt(h.readUInt32LE(0)));
+    }),
+  );
+  scanner?.force();
+}
+
+function initPayload(display: Display) {
+  return {
+    packDir: join(packsRoot, settings.pack).replace(/\\/g, '/'),
+    origin: { x: display.bounds.x, y: display.bounds.y },
+    world: lastWorld ?? fallbackWorld(),
+    state: pet?.sim.state ?? null,
+    settings,
+  };
+}
+
+function broadcast(channel: string, payload: unknown): void {
+  for (const { win } of overlays.values()) {
+    if (!win.isDestroyed()) win.webContents.send(channel, payload);
+  }
+}
 
 // ---------------------------------------------------------------- visibility
 
 function pushVisibility(): void {
-  if (!overlay) return;
   const hidden = !settings.petVisible || hiddenByFullscreen;
-  if (hidden && overlay.isVisible()) overlay.hide();
-  if (!hidden && !overlay.isVisible()) {
-    overlay.showInactive();
-    // Content protection can drop across hide/show (electron#29085).
-    overlay.setContentProtection(effectiveProtection());
+  for (const { win } of overlays.values()) {
+    if (win.isDestroyed()) continue;
+    if (hidden && win.isVisible()) win.hide();
+    if (!hidden && !win.isVisible()) {
+      win.showInactive();
+      win.setContentProtection(effectiveProtection()); // can drop across hide/show
+    }
   }
-  overlay.webContents.send(CH.visibility, {
-    hidden,
-    reason: hiddenByFullscreen ? 'fullscreen' : 'manual',
-  });
+  pet?.sim.dispatch(hidden ? { k: 'hide', reason: hiddenByFullscreen ? 'fullscreen' : 'manual' } : { k: 'show' });
+  pet?.wake();
+  broadcast(CH.visibility, { hidden, reason: hiddenByFullscreen ? 'fullscreen' : 'manual' });
 }
 
 // ------------------------------------------------------------------ settings
@@ -69,11 +128,14 @@ function applySettings(patch: Partial<Settings>): Settings {
   saveSettings(settings);
 
   if ('petVisible' in patch) pushVisibility();
-  if ('captureProtection' in patch) overlay?.setContentProtection(effectiveProtection());
+  if ('captureProtection' in patch) {
+    for (const { win } of overlays.values()) win.setContentProtection(effectiveProtection());
+  }
   if ('launchAtLogin' in patch) app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin });
 
-  overlay?.webContents.send(CH.settingsChanged, settings);
+  broadcast(CH.settingsChanged, settings);
   settingsWin?.webContents.send(CH.settingsChanged, settings);
+  pet?.wake();
   rebuildTrayMenu();
   return settings;
 }
@@ -82,38 +144,19 @@ function applySettings(patch: Partial<Settings>): Settings {
 
 function trayTemplate(): Electron.MenuItemConstructorOptions[] {
   return [
-    {
-      label: 'Pet visible',
-      type: 'checkbox',
-      checked: settings.petVisible,
-      click: (item) => applySettings({ petVisible: item.checked }),
-    },
-    {
-      label: 'Invisible in screen capture',
-      type: 'checkbox',
-      checked: settings.captureProtection,
-      click: (item) => applySettings({ captureProtection: item.checked }),
-    },
-    {
-      label: 'Debug overlay',
-      type: 'checkbox',
-      checked: settings.debugOverlay,
-      click: (item) => applySettings({ debugOverlay: item.checked }),
-    },
+    { label: 'Pet visible', type: 'checkbox', checked: settings.petVisible, click: (i) => applySettings({ petVisible: i.checked }) },
+    { label: 'Invisible in screen capture', type: 'checkbox', checked: settings.captureProtection, click: (i) => applySettings({ captureProtection: i.checked }) },
+    { label: 'Can climb walls', type: 'checkbox', checked: settings.climbing, click: (i) => applySettings({ climbing: i.checked }) },
+    { label: 'Debug overlay', type: 'checkbox', checked: settings.debugOverlay, click: (i) => applySettings({ debugOverlay: i.checked }) },
     { type: 'separator' },
-    {
-      label: 'Recenter pet',
-      click: () => overlay?.webContents.send(CH.command, { name: 'recenter' } satisfies OverlayCommand),
-    },
+    { label: 'Recenter pet', click: () => command({ name: 'recenter' }) },
     { label: 'Settings…', click: openSettings },
     { type: 'separator' },
     { label: 'Quit blerb', click: quit },
   ];
 }
 
-function rebuildTrayMenu(): void {
-  tray?.setContextMenu(Menu.buildFromTemplate(trayTemplate()));
-}
+const rebuildTrayMenu = () => tray?.setContextMenu(Menu.buildFromTemplate(trayTemplate()));
 
 function createTray(): void {
   const icon = nativeImage
@@ -126,104 +169,114 @@ function createTray(): void {
   tray.on('double-click', openSettings);
 }
 
-// ----------------------------------------------------------------- windows
+function command(c: OverlayCommand): void {
+  pet?.sim.dispatch({ k: 'command', name: c.name });
+  pet?.wake();
+}
 
 function openSettings(): void {
-  if (settingsWin && !settingsWin.isDestroyed()) {
-    settingsWin.focus();
-    return;
-  }
+  if (settingsWin && !settingsWin.isDestroyed()) return settingsWin.focus();
   settingsWin = createSettingsWindow();
   settingsWin.on('closed', () => (settingsWin = null));
-}
-
-function spawnOverlay(): void {
-  overlay = createOverlayWindow(screen.getPrimaryDisplay(), {
-    contentProtection: effectiveProtection(),
-  });
-
-  overlay.webContents.on('console-message', (_e, _level, message) => {
-    console.log('[overlay]', message);
-  });
-
-  overlay.webContents.on('did-finish-load', () => pushVisibility());
-  overlay.on('closed', () => {
-    overlay = null;
-    if (!quitting) quit();
-  });
-}
-
-function refitOverlay(): void {
-  if (!overlay) return;
-  overlay.setBounds(screen.getPrimaryDisplay().bounds);
-  scanner?.force();
 }
 
 // ------------------------------------------------------- cursor / clickthrough
 
 /**
- * The click-through hit test. Main-process cursor polling is the source of
- * truth — DOM mousemove forwarding silently dies when Task Manager has focus
- * (electron#33281, WONTFIX), so the renderer's own events can't be trusted
- * for this. 30Hz is imperceptible for a hover boundary and costs ~nothing.
+ * Click-through hit test, driven by a main-process cursor poll rather than DOM
+ * mousemove — forwarding silently dies when Task Manager has focus
+ * (electron#33281, WONTFIX), so renderer events can't be trusted for this.
+ *
+ * With N windows only the one under the pet may become interactive, and only
+ * while the cursor is actually over the sprite.
  */
 function startCursorWatcher(): void {
   setInterval(() => {
-    if (!overlay || overlay.isDestroyed() || !overlay.isVisible()) return;
-    if (dragLatch) return; // renderer owns the mouse until pointerup
+    if (dragLatch || !pet) return;
 
-    let inside = false;
-    if (petBbox) {
-      const p = screen.getCursorScreenPoint(); // DIP
-      const d = screen.getPrimaryDisplay().bounds;
-      const x = p.x - d.x;
-      const y = p.y - d.y;
-      inside =
-        x >= petBbox.x && x <= petBbox.x + petBbox.w && y >= petBbox.y && y <= petBbox.y + petBbox.h;
-    }
+    const s = pet.sim.state;
+    const cell = pet.pack.cells.get(deriveFrame(pet.pack, s).cellId);
+    if (!cell || s.hidden) return setInteractive(null);
 
-    if (inside !== cursorInside) {
-      cursorInside = inside;
-      if (inside) overlay.setIgnoreMouseEvents(false);
-      else overlay.setIgnoreMouseEvents(true, { forward: true });
-    }
+    const scale = settings.petScale;
+    const p = screen.getCursorScreenPoint(); // global DIP
+    const bx = s.x - cell.anchor[0] * scale;
+    const by = s.y - cell.anchor[1] * scale;
+    const over = p.x >= bx && p.x <= bx + cell.w * scale && p.y >= by && p.y <= by + cell.h * scale;
+
+    if (!over) return setInteractive(null);
+    const hit = [...overlays.values()].find(
+      (o) =>
+        p.x >= o.display.bounds.x &&
+        p.x < o.display.bounds.x + o.display.bounds.width &&
+        p.y >= o.display.bounds.y &&
+        p.y < o.display.bounds.y + o.display.bounds.height,
+    );
+    setInteractive(hit?.win ?? null);
   }, 33);
+}
+
+function setInteractive(win: BrowserWindow | null): void {
+  if (interactiveWin === win) return;
+  if (interactiveWin && !interactiveWin.isDestroyed()) {
+    interactiveWin.setIgnoreMouseEvents(true, { forward: true });
+  }
+  interactiveWin = win;
+  if (win && !win.isDestroyed()) win.setIgnoreMouseEvents(false);
+}
+
+// ------------------------------------------------------------------ snapshot
+
+function saveSnapshot(): void {
+  if (!pet) return;
+  try {
+    const f = snapshotFile();
+    mkdirSync(join(f, '..'), { recursive: true });
+    const tmp = f + '.tmp';
+    writeFileSync(tmp, JSON.stringify(pet.sim.serialize()));
+    renameSync(tmp, f);
+  } catch {
+    /* the pet just respawns next launch */
+  }
+}
+
+function loadSnapshot(): PetSnapshot | undefined {
+  try {
+    const f = snapshotFile();
+    if (!existsSync(f)) return undefined;
+    return JSON.parse(readFileSync(f, 'utf8')) as PetSnapshot;
+  } catch {
+    return undefined;
+  }
 }
 
 // ----------------------------------------------------------------------- ipc
 
 function registerIpc(): void {
-  ipcMain.handle(CH.overlayInit, () => ({
-    packDir: join(packsRoot, settings.pack).replace(/\\/g, '/'),
-    world: lastWorld ?? fallbackWorld(),
-    settings,
-  }));
+  ipcMain.handle(CH.overlayInit, (e) => {
+    const entry = [...overlays.values()].find((o) => o.win.webContents === e.sender);
+    return initPayload(entry?.display ?? screen.getPrimaryDisplay());
+  });
 
-  // Reads are restricted to the packs directory — the renderer needs sprite
-  // assets and nothing else from disk.
+  // Reads are restricted to packs/ — the renderer needs sprite assets and
+  // nothing else from disk.
   ipcMain.handle(CH.fsRead, async (_e, p: string) => {
     const rp = resolve(String(p));
     if (!rp.startsWith(resolve(packsRoot) + sep)) throw new Error('read outside packs/ denied');
     return readFile(rp);
   });
 
-  ipcMain.on(CH.overlayBbox, (_e, b: PetBbox) => {
-    petBbox = b;
-  });
-
   ipcMain.on(CH.overlayDrag, (_e, active: boolean) => {
     dragLatch = active;
-    if (!active) {
-      // Hand the mouse back; the watcher re-evaluates on its next tick.
-      cursorInside = false;
-      overlay?.setIgnoreMouseEvents(true, { forward: true });
-    }
+    if (!active) setInteractive(null);
   });
 
-  ipcMain.on(CH.overlayMenu, () => {
-    Menu.buildFromTemplate(trayTemplate()).popup();
+  ipcMain.on(CH.overlayPlace, (_e, pt: { x: number; y: number }) => {
+    pet?.sim.dispatch({ k: 'command', name: 'place', x: pt.x, y: pt.y });
+    pet?.wake();
   });
 
+  ipcMain.on(CH.overlayMenu, () => Menu.buildFromTemplate(trayTemplate()).popup());
   ipcMain.handle(CH.settingsGet, () => settings);
   ipcMain.handle(CH.settingsSet, (_e, patch: Partial<Settings>) => applySettings(patch));
   ipcMain.on(CH.appQuit, quit);
@@ -233,6 +286,8 @@ function registerIpc(): void {
 
 function quit(): void {
   quitting = true;
+  saveSnapshot();
+  pet?.stop();
   scanner?.stop();
   tray?.destroy();
   app.quit();
@@ -240,14 +295,21 @@ function quit(): void {
 
 void app.whenReady().then(() => {
   registerIpc();
-  spawnOverlay();
-  createTray();
-  startCursorWatcher();
+
+  const packDir = join(packsRoot, settings.pack);
+  const pack = loadPackSync(packDir);
+  // The pack ships with climbing on; the setting is the user's override.
+  pack.behavior.can.climb = settings.climbing;
+  // Diagnostic: climb at every wall instead of ~45% of the time, so the
+  // multi-monitor path can be exercised without waiting on dice.
+  if (process.env.BLERB_CLIMBY) pack.behavior.climbiness = 1;
 
   scanner = createScanner({
     onWorld: (world) => {
       lastWorld = world;
-      overlay?.webContents.send(CH.world, world);
+      pet?.sim.dispatch({ k: 'world', world });
+      pet?.wake();
+      broadcast(CH.world, world);
     },
     onFullscreen: (fs) => {
       if (fs !== hiddenByFullscreen) {
@@ -256,23 +318,46 @@ void app.whenReady().then(() => {
       }
     },
   });
-  // The overlay covers the whole display, so without this it looks like a
-  // perfectly good full-width ledge and the pet tries to stand on itself.
-  if (overlay) {
-    const handle = overlay.getNativeWindowHandle();
-    const hwnd =
-      handle.length >= 8 ? handle.readBigUInt64LE(0) : BigInt(handle.readUInt32LE(0));
-    scanner.setSelfHwnd(String(hwnd));
+
+  const world = fallbackWorld();
+  lastWorld = world;
+  pet = createPetHost(pack, world, loadSnapshot());
+  pet.onState((s: PetState) => broadcast(CH.petState, s));
+
+  if (process.env.BLERB_DEBUG) {
+    let prev = '';
+    pet.onState((s) => {
+      const where = [...overlays.values()].find(
+        (o) =>
+          s.x >= o.display.bounds.x &&
+          s.x < o.display.bounds.x + o.display.bounds.width &&
+          s.y >= o.display.bounds.y &&
+          s.y < o.display.bounds.y + o.display.bounds.height,
+      );
+      const line = `${s.behavior} on=${s.standingOn ?? s.climbingOn ?? 'air'} screen=${where?.display.id ?? '?'}`;
+      if (line !== prev) {
+        prev = line;
+        console.log(`[pet] ${line} @ ${Math.round(s.x)},${Math.round(s.y)}`);
+      }
+    });
   }
 
+  spawnOverlays();
+  createTray();
+  startCursorWatcher();
   scanner.start(300);
+  pet.start();
 
-  screen.on('display-metrics-changed', refitOverlay);
-  screen.on('display-added', refitOverlay);
-  screen.on('display-removed', refitOverlay);
+  setInterval(saveSnapshot, 10_000);
+
+  const relayout = () => spawnOverlays();
+  screen.on('display-added', relayout);
+  screen.on('display-removed', relayout);
+  screen.on('display-metrics-changed', relayout);
 
   console.log(
-    `[blerb] up — protection=${effectiveProtection()} gpu=${!process.env.BLERB_SOFTWARE} packs=${packsRoot}`,
+    `[blerb] up — displays=${overlays.size} protection=${effectiveProtection()} ` +
+      `gpu=${!process.env.BLERB_SOFTWARE} climb=${settings.climbing}`,
   );
 });
 

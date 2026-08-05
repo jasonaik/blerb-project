@@ -88,7 +88,12 @@ const Rig = z.object({
 
 const Behavior = z.object({
   speed: z
-    .object({ walk: z.number().positive().default(40), run: z.number().positive().default(85) })
+    .object({
+      walk: z.number().positive().default(40),
+      run: z.number().positive().default(85),
+      /** Vertical px/s while on a wall. Slower than walking reads as effort. */
+      climb: z.number().positive().default(28),
+    })
     .default({}),
   gravity: z.number().nonnegative().default(900),
   jump: z.number().nonnegative().default(260),
@@ -98,8 +103,12 @@ const Behavior = z.object({
       sit: z.boolean().default(true),
       sleep: z.boolean().default(true),
       drag: z.boolean().default(true),
+      /** Cling to and climb the outer edges of the desktop. */
+      climb: z.boolean().default(true),
     })
     .default({}),
+  /** 0..1 — how readily the pet climbs a wall instead of turning around. */
+  climbiness: z.number().min(0).max(1).default(0.45),
   /** Relative weights for picking the next idle behavior. Keys are animation names. */
   idleWeights: z.record(z.string(), z.number().nonnegative()).default({
     idle: 6,
@@ -192,6 +201,8 @@ export const KNOWN_ANIMATIONS = [
   'fall',
   'land',
   'stretch',
+  'climb',
+  'cling',
   'look',
   'react_happy',
   'sulk',
