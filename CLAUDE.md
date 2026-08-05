@@ -224,12 +224,18 @@ Multi-monitor is not "several worlds", it is **one world with holes in it**.
 
 `World.bounds` is the union of every display and is *not* walkable — two screens of different heights leave dead space inside that box. `World.regions` is the real screens; the pet must always be inside one. `scanner.ts` derives everything else from that list with one rule:
 
-- a **floor** exists along a screen's bottom edge only where no screen lies directly below (so the pet falls through onto the screen beneath)
+- a screen's **whole bottom edge is ground**, split where another screen lies directly below: the covered stretch is a `seam:` platform (`passthrough: true`), the rest is `floor:` (`passthrough: false`). Same `y`, so they read as one continuous line.
 - a **wall** exists along a screen's side edge only where no screen sits alongside at that height (so the pet walks across the seam where they touch)
 
-Everything the pet can do between monitors falls out of that: climb the outer edge of the desktop, walk between adjacent screens, drop from an upper screen to a lower one, and never step into dead space.
+Everything the pet can do between monitors falls out of that: climb the outer edge of the desktop, walk between adjacent screens, descend from an upper screen to a lower one by walking off the end of a seam, and never step into dead space.
+
+**The seam used to be a hole** — no platform at all, on the theory that the pet should fall through onto the screen beneath. In use that reads as broken: put the pet on your big monitor and it drops out of sight to the bottom of the laptop. A screen's bottom edge is somewhere the pet should be able to stand. Descending is still possible, it just requires walking to where the upper screen ends.
+
+**`regionAt` slop is load-bearing in one direction only.** It allows `EPS` (1.5px) so a pet can stand exactly on a boundary — but a pet stepping off the end of a seam is a fraction of a pixel *into* its neighbour, and the slop matched the screen it had just left. `stepFall` then stopped it on that screen's floor line, in mid-air above the screen below, where it walked around on nothing. So `stepFall` passes `eps = 0`. Anywhere the answer decides where the pet **falls**, use zero slop; anywhere it decides whether the pet is **standing**, use `EPS`.
 
 Two screens rarely line up exactly. When the pet climbs to the top of a wall it checks for a **mantle target** — a platform within 96px above the lip — and hauls itself up. That is what gets it from a laptop onto an external monitor sitting above and offset sideways; without it the pet reaches the corner and is stuck.
+
+**Dropping the pet by hand can attach it to a wall.** `place` looks for a wall within `WALL_GRAB` (24px) of the drop point and clings to it, because the pet can't be aimed at a wall any other way — it only reaches one mid-wander. Ground wins ties: near a screen's bottom corner *every* drop is within grabbing distance of the side wall, so a wall only beats the floor when the drop is more than `WALL_GRAB` above the ground. Silently pasting the pet to the edge when the user aimed at the taskbar is the worse failure.
 
 Walls carry a `side` (the direction from wall to pet). Climbing rotates the sprite by `side * π/2` about its anchor so its feet meet the surface, and sets `facing = side * climbDir` so it goes head-first. **Both terms are needed.** The rotation's handedness flips with the wall, so which mirror means "head up" flips with it too — `facing = -climbDir` looks correct on a right-hand wall and renders the pet upside down on a left-hand one. Invisible while `climb` was aliased to `walk` on a symmetric blob; obvious the moment the art has a head. Tested via `facing * sin(rotation)`, the direction the nose actually points, rather than via `facing` alone.
 

@@ -15,9 +15,21 @@ export function rectContains(r: Rect, x: number, y: number, eps = EPS): boolean 
   return x >= r.x - eps && x <= r.x + r.w + eps && y >= r.y - eps && y <= r.y + r.h + eps;
 }
 
-/** The region containing (x, y), or undefined if that point is off-desktop. */
-export function regionAt(regions: readonly Rect[], x: number, y: number): Rect | undefined {
-  for (const r of regions) if (rectContains(r, x, y)) return r;
+/**
+ * The region containing (x, y), or undefined if that point is off-desktop.
+ *
+ * `eps` defaults to the standing tolerance. Pass 0 when the answer decides
+ * where the pet *falls*: with slop, a pet a fraction past a screen's edge
+ * still matches the screen it just left, and gets planted on that screen's
+ * floor in mid-air above the one below.
+ */
+export function regionAt(
+  regions: readonly Rect[],
+  x: number,
+  y: number,
+  eps = EPS,
+): Rect | undefined {
+  for (const r of regions) if (rectContains(r, x, y, eps)) return r;
   return undefined;
 }
 

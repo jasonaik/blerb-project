@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { resolvePack } from '@blerb/pack';
-import { createSim, simpleWorld } from './sim.js';
+import { createSim, simpleWorld, WORLD_FLOOR } from './sim.js';
+import { EPS } from './geom.js';
 import type { PetState, World } from './types.js';
 
 const testPack = (behavior: Record<string, unknown> = {}) =>
@@ -331,6 +332,34 @@ describe('climbing', () => {
     expect(sim.state.x).toBeLessThanOrEqual(800);
   });
 
+  it('clings to a wall when the user drops it against one', () => {
+    const sim = createSim({ pack: testPack(), world: simpleWorld(800, 400), seed: 63 });
+    sim.dispatch({ k: 'command', name: 'place', x: 792, y: 150 });
+
+    expect(sim.state.climbingOn).toBe('wr');
+    expect(sim.state.behavior).toBe('cling');
+    expect(sim.state.x).toBe(800); // snapped to the wall, not left 8px shy
+    expect(sim.state.y).toBe(150);
+  });
+
+  it('prefers the ground when dropped into the bottom corner', () => {
+    // Every drop near the floor is also near the wall. Silently pasting the
+    // pet to the edge when the user aimed at the floor is the worse failure.
+    const sim = createSim({ pack: testPack(), world: simpleWorld(800, 400), seed: 65 });
+    sim.dispatch({ k: 'command', name: 'place', x: 794, y: 392 });
+
+    expect(sim.state.climbingOn).toBeNull();
+    for (const dt of dtSequence(400)) sim.step(dt);
+    expect(sim.state.standingOn).toBe('floor');
+  });
+
+  it('does not cling on placement when the pack cannot climb', () => {
+    const pack = testPack({ can: { climb: false } });
+    const sim = createSim({ pack, world: simpleWorld(800, 400), seed: 67 });
+    sim.dispatch({ k: 'command', name: 'place', x: 798, y: 150 });
+    expect(sim.state.climbingOn).toBeNull();
+  });
+
   it('never climbs when the pack says it cannot', () => {
     const pack = testPack({ can: { climb: false }, climbiness: 1 });
     const sim = createSim({ pack, world: simpleWorld(800, 400), seed: 61 });
@@ -343,6 +372,32 @@ describe('climbing', () => {
 });
 
 describe('multi-display', () => {
+  /**
+   * A grounded pet must be on the ground it claims to be on.
+   *
+   * The bug this exists for: `regionAt` allows 1.5px of slop so the pet can
+   * stand exactly on a screen boundary. A pet stepping off the end of one
+   * screen's ground is a fraction of a pixel into its neighbour, so the slop
+   * matched the screen it had just *left* — and the fall stopped it on that
+   * screen's floor line, in mid-air above the screen below. It then walked
+   * around on nothing.
+   */
+  function expectRealGround(world: World, s: PetState): void {
+    if (s.standingOn === null) return; // airborne, nothing to check
+    if (s.standingOn === WORLD_FLOOR) {
+      const r = world.regions.find(
+        (g) => s.x >= g.x - EPS && s.x <= g.x + g.w + EPS && Math.abs(g.y + g.h - s.y) <= EPS,
+      );
+      expect(r, `standing on world floor at ${s.x},${s.y} — no region bottom there`).toBeDefined();
+      return;
+    }
+    const p = world.platforms.find((q) => q.id === s.standingOn);
+    expect(p, `standing on unknown platform ${s.standingOn}`).toBeDefined();
+    expect(s.x).toBeGreaterThanOrEqual(p!.x0 - EPS);
+    expect(s.x).toBeLessThanOrEqual(p!.x1 + EPS);
+    expect(Math.abs(s.y - p!.y)).toBeLessThanOrEqual(EPS);
+  }
+
   /** Two 800x400 screens side by side, second one offset down by 100. */
   const twoScreens = (rev = 1): World => ({
     rev,
@@ -365,7 +420,13 @@ describe('multi-display', () => {
     reducedMotion: false,
   });
 
-  /** Screen B stacked directly above screen A, walls contiguous on the right. */
+  /**
+   * Screen B stacked directly above screen A, walls contiguous on the right.
+   *
+   * The upper screen's bottom edge is a `seam`: solid ground, but with another
+   * screen underneath it. This mirrors what the scanner emits — see
+   * apps/desktop/src/main/scanner.ts.
+   */
   const stacked = (rev = 1): World => ({
     rev,
     bounds: { x: 0, y: 0, w: 800, h: 800 },
@@ -373,7 +434,10 @@ describe('multi-display', () => {
       { x: 0, y: 0, w: 800, h: 400 },
       { x: 0, y: 400, w: 800, h: 400 },
     ],
-    platforms: [{ id: 'floorLower', x0: 0, x1: 800, y: 800, kind: 'floor', passthrough: false }],
+    platforms: [
+      { id: 'seamUpper', x0: 0, x1: 800, y: 400, kind: 'floor', passthrough: true },
+      { id: 'floorLower', x0: 0, x1: 800, y: 800, kind: 'floor', passthrough: false },
+    ],
     walls: [
       { id: 'wrUpper', x: 800, y0: 0, y1: 400, side: -1 },
       { id: 'wrLower', x: 800, y0: 400, y1: 800, side: -1 },
@@ -486,17 +550,54 @@ describe('multi-display', () => {
     expect(mantled).toBe(true);
   });
 
-  it('falls from the upper screen down onto the lower one', () => {
+  it('lands on the bottom edge of the screen it was dropped on', () => {
     const pack = testPack({ climbiness: 0 });
-    const world = stacked();
-    // Drop the pet in mid-air on the upper screen.
-    const sim = createSim({ pack, world, seed: 79 });
+    // Drop the pet in mid-air, high up on the UPPER screen.
+    const sim = createSim({ pack, world: stacked(), seed: 79 });
     sim.dispatch({ k: 'command', name: 'place', x: 400, y: 50 });
 
     for (const dt of dtSequence(4000)) sim.step(dt);
-    // Only floor is at the bottom of the LOWER screen — nothing stops it at 400.
-    expect(sim.state.y).toBe(800);
-    expect(sim.state.standingOn).toBe('floorLower');
+    // It stops at the first ground under it, not at the bottom of the desktop.
+    // Falling all the way through the screen you put it on reads as broken.
+    expect(sim.state.y).toBe(400);
+    expect(sim.state.standingOn).toBe('seamUpper');
+  });
+
+  it('still has a way down to the screen below', () => {
+    const pack = testPack({ climbiness: 0 });
+    const world: World = {
+      ...stacked(),
+      // Upper screen narrower than the lower one, as offset monitors are, so
+      // the seam has an end to walk off.
+      regions: [
+        { x: 0, y: 0, w: 500, h: 400 },
+        { x: 0, y: 400, w: 800, h: 400 },
+      ],
+      platforms: [
+        { id: 'seamUpper', x0: 0, x1: 500, y: 400, kind: 'floor', passthrough: true },
+        { id: 'floorLower', x0: 0, x1: 800, y: 800, kind: 'floor', passthrough: false },
+      ],
+      walls: [{ id: 'wrLower', x: 800, y0: 400, y1: 800, side: -1 }],
+    };
+    const sim = createSim({ pack, world, seed: 81 });
+    sim.dispatch({ k: 'command', name: 'place', x: 250, y: 50 });
+    for (const dt of dtSequence(400)) sim.step(dt);
+    expect(sim.state.standingOn).toBe('seamUpper');
+
+    // Keep calling it rightward. A walk bout is capped at 4s by the motion
+    // budget, so an undriven pet never covers the 250px to the seam's end —
+    // that is the budget working, not the descent failing.
+    let arrived = false;
+    for (const [i, dt] of dtSequence(120_000).entries()) {
+      if (i % 60 === 0) sim.dispatch({ k: 'command', name: 'come-here', x: 1e6 });
+      sim.step(dt);
+      expectRealGround(world, sim.state);
+      if (sim.state.standingOn === 'floorLower') {
+        arrived = true;
+        break;
+      }
+    }
+    expect(arrived).toBe(true);
   });
 
   it('re-settles onto real screen when a monitor is unplugged', () => {

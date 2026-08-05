@@ -36,6 +36,12 @@ const MAX_STEP_MS = 250;
 /** Design contract rule 4: stationary >=70% of wall-clock. */
 const MOTION_BUDGET = 0.3;
 
+/**
+ * How near a wall a hand-placed pet has to land to grab it, in world px.
+ * Also the minimum drop below the cursor before a wall beats the ground.
+ */
+const WALL_GRAB = 24;
+
 /** EMA time constant for motionEma, ms. ~30s of memory. */
 const MOTION_TAU_MS = 30_000;
 
@@ -268,7 +274,7 @@ export function createSim(opts: SimOptions): Sim {
     state.animT = 0;
   }
 
-  function startClimb(w: Wall, dir: -1 | 1): void {
+  function attachToWall(w: Wall, dir: -1 | 1): void {
     state.climbingOn = w.id;
     state.climbSide = w.side;
     state.climbDir = dir;
@@ -283,7 +289,40 @@ export function createSim(opts: SimOptions): Sim {
     // with it. `side * dir` is the product that keeps the pet climbing head
     // first on both edges of the desktop; `-dir` is right only on the right.
     state.facing = (w.side * dir) as -1 | 1;
+  }
+
+  function startClimb(w: Wall, dir: -1 | 1): void {
+    attachToWall(w, dir);
     setBehavior('climb');
+  }
+
+  /**
+   * The nearest wall the pet could grab from a point, if any.
+   *
+   * Used when the user drops the pet by hand. The radius is generous on
+   * purpose — placing a pet on a 1px line with a mouse is not a game anyone
+   * wants to play.
+   */
+  function wallNear(x: number, y: number): Wall | undefined {
+    let best: Wall | undefined;
+    let bestD = WALL_GRAB;
+    for (const w of world.walls) {
+      if (y < w.y0 - EPS || y > w.y1 + EPS) continue;
+      const d = Math.abs(w.x - x);
+      if (d <= bestD) {
+        bestD = d;
+        best = w;
+      }
+    }
+    return best;
+  }
+
+  /** How far below a point the ground is, or Infinity if there is none. */
+  function dropHeight(x: number, y: number): number {
+    const p = platformUnder(x, y);
+    if (p) return p.y - y;
+    const r = regionAt(world.regions, x, y);
+    return r ? r.y + r.h - y : Infinity;
   }
 
   /** A wall the pet would cross moving from `x` to `nextX` at height `y`. */
@@ -395,9 +434,11 @@ export function createSim(opts: SimOptions): Sim {
     }
 
     // No platform: stop at the bottom of whatever region we're falling
-    // through. Regions stacked vertically have no floor between them, so the
-    // pet falls from an upper screen onto the lower one and only stops here.
-    const r = regionAt(world.regions, state.x, state.y) ?? nearestRegion(state.x, state.y);
+    // through. Zero slop deliberately — a pet that has just walked off the
+    // edge of a screen is a fraction of a pixel into its neighbour, and the
+    // standing tolerance would hand back the screen it just left, stopping it
+    // dead on that screen's floor line in mid-air above the next one.
+    const r = regionAt(world.regions, state.x, state.y, 0) ?? nearestRegion(state.x, state.y);
     const floorY = r.y + r.h;
     if (state.y >= floorY) {
       state.y = floorY;
@@ -641,7 +682,22 @@ export function createSim(opts: SimOptions): Sim {
             state.vx = 0;
             state.vy = 0;
             state.climbingOn = null;
-            startFalling();
+
+            // Dropped against a side edge: hang there. Without this the only
+            // way onto a wall is to catch the pet mid-wander, since it can't
+            // be aimed at one.
+            //
+            // Ground wins ties. Near the bottom corner of a screen every drop
+            // is within grabbing distance of the wall, and silently pasting
+            // the pet to the edge when the user clearly meant the floor is
+            // worse than the occasional missed wall.
+            const w = pack.behavior.can.climb ? wallNear(state.x, state.y) : undefined;
+            if (w && dropHeight(state.x, state.y) > WALL_GRAB) {
+              attachToWall(w, -1);
+              setBehavior('cling');
+            } else {
+              startFalling();
+            }
           }
           break;
 

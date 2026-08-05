@@ -9,16 +9,22 @@ import * as win32 from './win32';
  *
  * The interesting part is deciding where the desktop *ends*:
  *
- *   - A floor exists along a screen's bottom edge only where no other screen
- *     lies directly below. Where one does, the pet falls through onto it.
+ *   - Every screen's bottom edge is ground. Where another screen lies directly
+ *     below, that stretch is a `seam` — still solid, but the way down to the
+ *     screen beneath, reachable by walking off either end of it.
  *   - A wall exists along a screen's left/right edge only where no other
  *     screen sits alongside at that height. Where one does, the pet walks
  *     across the seam.
  *
- * That single rule gives all the multi-monitor behaviour: climb the outer
- * edge of the desktop, walk between adjacent screens, drop from an upper
- * screen to a lower one — and never step into the dead space that an L-shaped
- * two-monitor layout leaves inside the bounding box.
+ * That gives all the multi-monitor behaviour: climb the outer edge of the
+ * desktop, walk between adjacent screens, descend from an upper screen to a
+ * lower one — and never step into the dead space that an L-shaped two-monitor
+ * layout leaves inside the bounding box.
+ *
+ * The seam used to be a *hole* — no platform at all, so the pet fell straight
+ * through the upper screen. That reads as broken: put the pet on your big
+ * monitor and it vanishes to the bottom of the laptop. A screen's bottom edge
+ * is somewhere the pet should be able to stand.
  *
  * Coordinate discipline (CLAUDE.md §2): win32.ts hands us PHYSICAL px,
  * Electron displays speak DIP. Convert exactly once, here.
@@ -65,12 +71,20 @@ function buildGeometry(list: ScreenInfo[]): { platforms: Platform[]; walls: Wall
     const right = r.x + r.w;
     const bottom = r.y + r.h;
 
-    // ---- floor: bottom edge, minus any screen directly below -------------
+    // ---- ground: the whole bottom edge, split at any screen below ---------
+    // Both halves are solid and at the same y, so they read as one continuous
+    // line the pet walks along. The split exists only to mark which stretch
+    // has somewhere to go underneath it.
+    const edge: Span = { a: r.x, b: right };
     const below: Span[] = list
       .filter((o) => o.id !== s.id && Math.abs(o.region.y - bottom) <= TOUCH)
       .map((o) => ({ a: o.region.x, b: o.region.x + o.region.w }));
 
-    for (const [i, span] of subtractSpans({ a: r.x, b: right }, below).entries()) {
+    const outer = subtractSpans(edge, below);
+    // Whatever the outer spans left behind is exactly the covered stretch.
+    const seam = subtractSpans(edge, outer);
+
+    for (const [i, span] of outer.entries()) {
       platforms.push({
         id: `floor:${s.id}:${i}`,
         x0: span.a,
@@ -78,6 +92,18 @@ function buildGeometry(list: ScreenInfo[]): { platforms: Platform[]; walls: Wall
         y: s.floorY,
         kind: 'floor',
         passthrough: false,
+      });
+    }
+    for (const [i, span] of seam.entries()) {
+      platforms.push({
+        id: `seam:${s.id}:${i}`,
+        x0: span.a,
+        x1: span.b,
+        y: s.floorY,
+        kind: 'floor',
+        // There is a screen under this one. Stepping off either end drops the
+        // pet onto it, which is how it gets downstairs.
+        passthrough: true,
       });
     }
 
