@@ -1,0 +1,15 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "composite": false,
+    "declaration": false,
+    "noEmit": true,
+    "paths": {
+      "@blerb/pack": ["../../pack/src/index.ts"],
+      "@blerb/core": ["../../core/src/index.ts"],
+      "@blerb/render-canvas": ["../../render-canvas/src/index.ts"]
+    }
+  },
+  "include": ["**/*.ts"]
+}

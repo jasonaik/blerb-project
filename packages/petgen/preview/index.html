@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>petgen preview</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #eef2f6;
+        --ink: #33414f;
+        --panel: rgba(255, 255, 255, 0.72);
+        --ledge: #c8d4e0;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #171c22;
+          --ink: #aebac6;
+          --panel: rgba(30, 37, 45, 0.72);
+          --ledge: #2a3441;
+        }
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; overflow: hidden; }
+      body {
+        background: var(--bg);
+        color: var(--ink);
+        font: 12px/1.5 ui-monospace, "Cascadia Code", "SF Mono", Menlo, monospace;
+      }
+      #stage { position: fixed; inset: 0; }
+      /* Drawn as DOM rather than on the canvas so the pet is demonstrably
+         standing on things the sim was told about, not on painted decoration. */
+      .ledge { position: fixed; background: var(--ledge); border-radius: 3px; }
+      #hud {
+        position: fixed; top: 12px; left: 12px; padding: 10px 12px;
+        background: var(--panel); border-radius: 8px;
+        backdrop-filter: blur(8px); white-space: pre; pointer-events: none;
+        box-shadow: 0 1px 3px rgba(0,0,0,.12);
+      }
+      #err {
+        position: fixed; inset: 24px; padding: 20px; overflow: auto;
+        background: #7f1d1d; color: #fff; border-radius: 8px;
+        white-space: pre-wrap; display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="ledges"></div>
+    <canvas id="stage"></canvas>
+    <div id="hud">loading…</div>
+    <pre id="err"></pre>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

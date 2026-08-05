@@ -1,0 +1,26 @@
+{
+  "name": "@blerb/petgen",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "petgen": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsup src/cli.ts --format esm --clean",
+    "typecheck": "tsc --build",
+    "petgen": "tsx src/cli.ts",
+    "preview": "tsx src/cli.ts preview",
+    "make-blob": "node scripts/make-blob-atlas.mjs"
+  },
+  "dependencies": {
+    "@blerb/core": "workspace:*",
+    "@blerb/pack": "workspace:*",
+    "@blerb/render-canvas": "workspace:*"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "vite": "^6.0.5"
+  }
+}

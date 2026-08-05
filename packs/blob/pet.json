@@ -1,0 +1,15 @@
+{
+  "format": "blerb-pet/1",
+  "id": "blob",
+  "name": "Blob",
+  "author": "blerb",
+  "license": "CC0-1.0",
+  "pixelArt": true,
+  "atlas": { "src": "atlas.png" },
+  "grid": { "w": 32, "h": 32, "cols": 4 },
+  "animations": {
+    "idle": { "fps": 2, "frames": [0, 1] },
+    "walk": { "fps": 8, "frames": [2, 0, 3, 0], "designSpeed": 40 }
+  },
+  "aliases": { "sit": "idle", "sleep": "idle", "fall": "idle", "land": "idle", "stretch": "idle" }
+}

@@ -1,0 +1,9 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/pack" },
+    { "path": "./packages/core" },
+    { "path": "./packages/render-canvas" },
+    { "path": "./packages/petgen" }
+  ]
+}
