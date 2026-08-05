@@ -224,12 +224,19 @@ Multi-monitor is not "several worlds", it is **one world with holes in it**.
 
 `World.bounds` is the union of every display and is *not* walkable — two screens of different heights leave dead space inside that box. `World.regions` is the real screens; the pet must always be inside one. `scanner.ts` derives everything else from that list with one rule:
 
-- a screen's **whole bottom edge is ground**, split where another screen lies directly below: the covered stretch is a `seam:` platform (`passthrough: true`), the rest is `floor:` (`passthrough: false`). Same `y`, so they read as one continuous line.
-- a **wall** exists along a screen's side edge only where no screen sits alongside at that height (so the pet walks across the seam where they touch)
+- a screen's **whole bottom edge is ground**, at `floorY` (the taskbar's top), split where another screen lies directly below: the covered stretch is a `seam:` platform (`passthrough: true`), the rest is `floor:` (`passthrough: false`). Same `y`, so they read as one continuous line.
+- a **wall** exists along a screen's side edge only where no screen sits alongside at that height (so the pet walks across the seam where they touch), and it **stops at `floorY`**, not at the screen's bottom pixel — a wall running past the ground let a descending pet slide in behind the taskbar.
 
-Everything the pet can do between monitors falls out of that: climb the outer edge of the desktop, walk between adjacent screens, descend from an upper screen to a lower one by walking off the end of a seam, and never step into dead space.
+`buildDesktopGeometry` lives in **`@blerb/core`**, not in the scanner, so it can be tested against real monitor layouts without an `electron` import. That is not tidiness: while it lived in the app, the sim tests hand-wrote `World`s and quietly omitted walls the real scanner emits, and two of them certified a descent route that does not exist on actual hardware. If a test needs a desktop, it declares screens and derives the rest.
 
-**The seam used to be a hole** — no platform at all, on the theory that the pet should fall through onto the screen beneath. In use that reads as broken: put the pet on your big monitor and it drops out of sight to the bottom of the laptop. A screen's bottom edge is somewhere the pet should be able to stand. Descending is still possible, it just requires walking to where the upper screen ends.
+**The seam used to be a hole** — no platform at all, on the theory that the pet should fall through onto the screen beneath. In use that reads as broken: put the pet on your big monitor and it drops out of sight to the bottom of the laptop.
+
+**But making it solid trapped the pet on the upper screen** — 0/12 autonomous runs came back down, against 6/6 before, while ascent stayed 6/6. A one-way trip. A seam never has a walk-off end: each end is either more ground at the same `y`, or the screen's own side edge, which always carries a wall. So `passthrough` — until then dead data nothing read — now means something: **a pet standing on a seam has a small chance per behaviour decision of slipping through it** (`SEAM_DROP`, 3%, roughly a couple of minutes). That is the only way off an upper monitor, and it is why the flag exists. Window ledges are passthrough too but are excluded: they already have ends over open air, and stealing the pet off your title bar every two minutes is not charm.
+
+Two supporting rules, both of which the trapped-pet bug hid behind:
+
+- **A wall does not block a pet level with its top.** `wallAhead` tests `y < w.y0 + EPS`, not `y0 - EPS`. A lower screen's side wall begins exactly on the upper screen's ground line, and with the inclusive test it fenced the pet off from half of its own bottom edge.
+- **Running out of platform is only a cliff if nothing continues at the same height.** A screen's ground is several platforms (floor either side of a seam); `adjoining()` hands the pet over. Without it the join read as a ledge edge and reflected the pet ~85% of the time — an invisible wall in the middle of the taskbar.
 
 **`regionAt` slop is load-bearing in one direction only.** It allows `EPS` (1.5px) so a pet can stand exactly on a boundary — but a pet stepping off the end of a seam is a fraction of a pixel *into* its neighbour, and the slop matched the screen it had just left. `stepFall` then stopped it on that screen's floor line, in mid-air above the screen below, where it walked around on nothing. So `stepFall` passes `eps = 0`. Anywhere the answer decides where the pet **falls**, use zero slop; anywhere it decides whether the pet is **standing**, use `EPS`.
 

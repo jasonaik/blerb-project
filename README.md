@@ -63,12 +63,13 @@ Everywhere else on screen, clicks pass straight through to whatever is underneat
 
 ## Multiple monitors
 
-The pet treats your whole desktop as **one world with holes in it**, not as several worlds. Two rules produce everything:
+The pet treats your whole desktop as **one world with holes in it**, not as several worlds. A few rules produce everything:
 
-- a **floor** exists along a screen's bottom edge only where no screen sits below it
+- a screen's **whole bottom edge is ground**, so the pet stands on the monitor you put it on rather than dropping out of sight
+- where another screen lies directly below, that stretch is a **seam**: still solid, but the pet occasionally slips through it to the screen beneath — the only way off an upper monitor
 - a **wall** exists along a screen's side edge only where no screen sits alongside it
 
-So the pet walks across the seam between two adjacent monitors, falls through the region above a lower screen onto it, and climbs the outer edge of the desktop. Where two screens are offset — a laptop below and an external above and to one side — it climbs to the corner and **mantles**: hauls itself up onto a floor within 96px above the lip.
+So the pet walks across the boundary between two adjacent monitors, drifts down to a lower screen in its own time, and climbs the outer edge of the desktop. Where two screens are offset — a laptop below and an external above and to one side — it climbs to the corner and **mantles**: hauls itself up onto a floor within 96px above the lip.
 
 Mixed DPI is handled: one window per display at that display's own scale factor, never one big window spanning everything.
 

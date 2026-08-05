@@ -1,5 +1,5 @@
 import { screen } from 'electron';
-import { subtractSpans, unionRect, type Platform, type Rect, type Span, type Wall, type World } from '@blerb/core';
+import { buildDesktopGeometry, unionRect, type ScreenInfo, type World } from '@blerb/core';
 import * as win32 from './win32';
 
 /**
@@ -7,31 +7,14 @@ import * as win32 from './win32';
  * every monitor. The sim works in this one space; each overlay window
  * subtracts its own display origin when drawing.
  *
- * The interesting part is deciding where the desktop *ends*:
- *
- *   - Every screen's bottom edge is ground. Where another screen lies directly
- *     below, that stretch is a `seam` — still solid, but the way down to the
- *     screen beneath, reachable by walking off either end of it.
- *   - A wall exists along a screen's left/right edge only where no other
- *     screen sits alongside at that height. Where one does, the pet walks
- *     across the seam.
- *
- * That gives all the multi-monitor behaviour: climb the outer edge of the
- * desktop, walk between adjacent screens, descend from an upper screen to a
- * lower one — and never step into the dead space that an L-shaped two-monitor
- * layout leaves inside the bounding box.
- *
- * The seam used to be a *hole* — no platform at all, so the pet fell straight
- * through the upper screen. That reads as broken: put the pet on your big
- * monitor and it vanishes to the bottom of the laptop. A screen's bottom edge
- * is somewhere the pet should be able to stand.
+ * The geometry rules — which edges are ground, which are climbable — live in
+ * `buildDesktopGeometry` in @blerb/core, so they can be tested against real
+ * monitor layouts without an electron import. This file only samples the OS
+ * and converts coordinates.
  *
  * Coordinate discipline (CLAUDE.md §2): win32.ts hands us PHYSICAL px,
  * Electron displays speak DIP. Convert exactly once, here.
  */
-
-/** How close two edges must be (DIP) to count as touching. */
-const TOUCH = 2;
 
 export interface Scanner {
   start(intervalMs?: number): void;
@@ -45,14 +28,6 @@ export interface ScannerEvents {
   onFullscreen(fullscreen: boolean): void;
 }
 
-interface ScreenInfo {
-  id: number;
-  /** Full display bounds — the pet may walk over the taskbar's screen area. */
-  region: Rect;
-  /** Where the ground is: the taskbar's top edge, or the screen bottom. */
-  floorY: number;
-}
-
 function screens(): ScreenInfo[] {
   return screen.getAllDisplays().map((d) => ({
     id: d.id,
@@ -60,69 +35,6 @@ function screens(): ScreenInfo[] {
     // Standing ON the taskbar is the charm, so the floor is its top edge.
     floorY: Math.min(d.bounds.y + d.bounds.height, d.workArea.y + d.workArea.height),
   }));
-}
-
-function buildGeometry(list: ScreenInfo[]): { platforms: Platform[]; walls: Wall[] } {
-  const platforms: Platform[] = [];
-  const walls: Wall[] = [];
-
-  for (const s of list) {
-    const r = s.region;
-    const right = r.x + r.w;
-    const bottom = r.y + r.h;
-
-    // ---- ground: the whole bottom edge, split at any screen below ---------
-    // Both halves are solid and at the same y, so they read as one continuous
-    // line the pet walks along. The split exists only to mark which stretch
-    // has somewhere to go underneath it.
-    const edge: Span = { a: r.x, b: right };
-    const below: Span[] = list
-      .filter((o) => o.id !== s.id && Math.abs(o.region.y - bottom) <= TOUCH)
-      .map((o) => ({ a: o.region.x, b: o.region.x + o.region.w }));
-
-    const outer = subtractSpans(edge, below);
-    // Whatever the outer spans left behind is exactly the covered stretch.
-    const seam = subtractSpans(edge, outer);
-
-    for (const [i, span] of outer.entries()) {
-      platforms.push({
-        id: `floor:${s.id}:${i}`,
-        x0: span.a,
-        x1: span.b,
-        y: s.floorY,
-        kind: 'floor',
-        passthrough: false,
-      });
-    }
-    for (const [i, span] of seam.entries()) {
-      platforms.push({
-        id: `seam:${s.id}:${i}`,
-        x0: span.a,
-        x1: span.b,
-        y: s.floorY,
-        kind: 'floor',
-        // There is a screen under this one. Stepping off either end drops the
-        // pet onto it, which is how it gets downstairs.
-        passthrough: true,
-      });
-    }
-
-    // ---- walls: side edges, minus any screen alongside --------------------
-    for (const edge of [
-      { x: r.x, side: 1 as const, key: 'l', neighbourEdge: (o: Rect) => o.x + o.w },
-      { x: right, side: -1 as const, key: 'r', neighbourEdge: (o: Rect) => o.x },
-    ]) {
-      const covered: Span[] = list
-        .filter((o) => o.id !== s.id && Math.abs(edge.neighbourEdge(o.region) - edge.x) <= TOUCH)
-        .map((o) => ({ a: o.region.y, b: o.region.y + o.region.h }));
-
-      for (const [i, span] of subtractSpans({ a: r.y, b: bottom }, covered).entries()) {
-        walls.push({ id: `wall:${s.id}:${edge.key}:${i}`, x: edge.x, y0: span.a, y1: span.b, side: edge.side });
-      }
-    }
-  }
-
-  return { platforms, walls };
 }
 
 export function createScanner(events: ScannerEvents): Scanner {
@@ -135,7 +47,7 @@ export function createScanner(events: ScannerEvents): Scanner {
     const list = screens();
     const regions = list.map((s) => s.region);
     const bounds = unionRect(regions);
-    const { platforms, walls } = buildGeometry(list);
+    const { platforms, walls } = buildDesktopGeometry(list);
 
     let fullscreen = false;
 
@@ -230,6 +142,6 @@ export function createScanner(events: ScannerEvents): Scanner {
 export function fallbackWorld(): World {
   const list = screens();
   const regions = list.map((s) => s.region);
-  const { platforms, walls } = buildGeometry(list);
+  const { platforms, walls } = buildDesktopGeometry(list);
   return { rev: 0, bounds: unionRect(regions), regions, platforms, walls, gravity: 900, reducedMotion: false };
 }

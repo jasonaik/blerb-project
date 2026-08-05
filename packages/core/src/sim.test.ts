@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { resolvePack } from '@blerb/pack';
 import { createSim, simpleWorld, WORLD_FLOOR } from './sim.js';
-import { EPS } from './geom.js';
+import { EPS, unionRect } from './geom.js';
+import { buildDesktopGeometry, type ScreenInfo } from './desktop.js';
 import type { PetState, World } from './types.js';
 
 const testPack = (behavior: Record<string, unknown> = {}) =>
@@ -398,56 +399,96 @@ describe('multi-display', () => {
     expect(Math.abs(s.y - p!.y)).toBeLessThanOrEqual(EPS);
   }
 
-  /** Two 800x400 screens side by side, second one offset down by 100. */
-  const twoScreens = (rev = 1): World => ({
-    rev,
-    bounds: { x: 0, y: 0, w: 1600, h: 500 },
-    regions: [
-      { x: 0, y: 0, w: 800, h: 400 },
-      { x: 800, y: 100, w: 800, h: 400 },
-    ],
-    platforms: [
-      { id: 'floorA', x0: 0, x1: 800, y: 400, kind: 'floor', passthrough: false },
-      { id: 'floorB', x0: 800, x1: 1600, y: 500, kind: 'floor', passthrough: false },
-    ],
-    // Outer edges only; the seam at x=800 is open between y=100 and y=400.
-    walls: [
-      { id: 'wl', x: 0, y0: 0, y1: 400, side: 1 },
-      { id: 'wr', x: 1600, y0: 100, y1: 500, side: -1 },
-      { id: 'seamTop', x: 800, y0: 0, y1: 100, side: -1 },
-    ],
-    gravity: 900,
-    reducedMotion: false,
-  });
+  /**
+   * Build a World the way the app does: from screens, through the same
+   * `buildDesktopGeometry` the scanner uses.
+   *
+   * Hand-written fixtures are how a descent route that does not exist got
+   * certified. The fixture left out walls the real scanner emits, so in the
+   * test the pet walked off an edge that is fenced on actual hardware. If a
+   * test needs a desktop, it declares screens and derives everything else.
+   */
+  const desktop = (list: ScreenInfo[], rev = 1): World => {
+    const regions = list.map((s) => s.region);
+    const { platforms, walls } = buildDesktopGeometry(list);
+    platforms.sort((a, z) => a.y - z.y); // as the scanner does
+    return {
+      rev,
+      bounds: unionRect(regions),
+      regions,
+      platforms,
+      walls,
+      gravity: 900,
+      reducedMotion: false,
+    };
+  };
+
+  /** Two 800x400 screens side by side, the second offset down by 100. */
+  const SIDE_BY_SIDE: ScreenInfo[] = [
+    { id: 'A', region: { x: 0, y: 0, w: 800, h: 400 }, floorY: 400 },
+    { id: 'B', region: { x: 800, y: 100, w: 800, h: 400 }, floorY: 500 },
+  ];
+
+  /** The same two, flush: same height, touching. The pet should walk across. */
+  const FLUSH: ScreenInfo[] = [
+    { id: 'A', region: { x: 0, y: 0, w: 800, h: 400 }, floorY: 400 },
+    { id: 'B', region: { x: 800, y: 0, w: 800, h: 400 }, floorY: 400 },
+  ];
+
+  /** Screen U directly above screen L, side edges aligned. */
+  const STACK: ScreenInfo[] = [
+    { id: 'U', region: { x: 0, y: 0, w: 800, h: 400 }, floorY: 400 },
+    { id: 'L', region: { x: 0, y: 400, w: 800, h: 400 }, floorY: 800 },
+  ];
 
   /**
-   * Screen B stacked directly above screen A, walls contiguous on the right.
-   *
-   * The upper screen's bottom edge is a `seam`: solid ground, but with another
-   * screen underneath it. This mirrors what the scanner emits — see
-   * apps/desktop/src/main/scanner.ts.
+   * The real layout on the dev machine (CLAUDE.md §14): a 1440x900 laptop at
+   * 0,0 with a taskbar, and a 1920x1080 external above it offset right by 233.
+   * Their side edges do NOT line up, so crossing between them needs the mantle
+   * going up and a seam drop coming down.
    */
-  const stacked = (rev = 1): World => ({
-    rev,
-    bounds: { x: 0, y: 0, w: 800, h: 800 },
-    regions: [
-      { x: 0, y: 0, w: 800, h: 400 },
-      { x: 0, y: 400, w: 800, h: 400 },
-    ],
-    platforms: [
-      { id: 'seamUpper', x0: 0, x1: 800, y: 400, kind: 'floor', passthrough: true },
-      { id: 'floorLower', x0: 0, x1: 800, y: 800, kind: 'floor', passthrough: false },
-    ],
-    walls: [
-      { id: 'wrUpper', x: 800, y0: 0, y1: 400, side: -1 },
-      { id: 'wrLower', x: 800, y0: 400, y1: 800, side: -1 },
-    ],
-    gravity: 900,
-    reducedMotion: false,
+  const DEV: ScreenInfo[] = [
+    { id: 'laptop', region: { x: 0, y: 0, w: 1440, h: 900 }, floorY: 852 },
+    { id: 'ext', region: { x: 233, y: -1080, w: 1920, h: 1080 }, floorY: -48 },
+  ];
+
+  it('derives the documented shape from the dev machine layout', () => {
+    const { platforms, walls } = buildDesktopGeometry(DEV);
+    const ids = (xs: { id: string }[]) => xs.map((x) => x.id).sort();
+
+    expect(ids(platforms)).toEqual(['floor:ext:0', 'floor:laptop:0', 'seam:ext:0']);
+    // The external's ground is one line at y=-48: seam over the laptop, plain
+    // floor where it overhangs to the right.
+    expect(platforms.find((p) => p.id === 'seam:ext:0')).toMatchObject({
+      x0: 233,
+      x1: 1440,
+      y: -48,
+      passthrough: true,
+    });
+    expect(platforms.find((p) => p.id === 'floor:ext:0')).toMatchObject({
+      x0: 1440,
+      x1: 2153,
+      y: -48,
+      passthrough: false,
+    });
+
+    // Walls stop at the ground, not at the screen's bottom pixel — otherwise a
+    // pet climbing down slides 48px behind the taskbar.
+    expect(ids(walls)).toEqual([
+      'wall:ext:l:0',
+      'wall:ext:r:0',
+      'wall:laptop:l:0',
+      'wall:laptop:r:0',
+    ]);
+    expect(walls.find((w) => w.id === 'wall:laptop:r:0')).toMatchObject({ x: 1440, y0: 0, y1: 852 });
   });
 
   it('does not walk into the dead space between offset monitors', () => {
-    const sim = createSim({ pack: testPack({ climbiness: 0 }), world: twoScreens(), seed: 71 });
+    const sim = createSim({
+      pack: testPack({ climbiness: 0 }),
+      world: desktop(SIDE_BY_SIDE),
+      seed: 71,
+    });
     for (const dt of dtSequence(40_000)) {
       sim.step(dt);
       const { x, y } = sim.state;
@@ -458,40 +499,32 @@ describe('multi-display', () => {
   });
 
   it('crosses from one screen to the next along a shared floor', () => {
-    const world: World = {
-      ...twoScreens(),
-      regions: [
-        { x: 0, y: 0, w: 800, h: 400 },
-        { x: 800, y: 0, w: 800, h: 400 },
-      ],
-      platforms: [{ id: 'floor', x0: 0, x1: 1600, y: 400, kind: 'floor', passthrough: false }],
-      walls: [
-        { id: 'wl', x: 0, y0: 0, y1: 400, side: 1 },
-        { id: 'wr', x: 1600, y0: 0, y1: 400, side: -1 },
-      ],
-    };
+    // Two platforms meeting at x=800 with no wall between them. The join must
+    // not read as a cliff just because it is a different platform id.
+    const world = desktop(FLUSH);
     const sim = createSim({ pack: testPack({ climbiness: 0 }), world, seed: 73 });
-    // Start just short of the seam and drive it across, rather than hoping a
-    // random walk covers 800px.
     sim.dispatch({ k: 'command', name: 'place', x: 760, y: 400 });
     for (const dt of dtSequence(400)) {
       sim.step(dt);
       if (sim.state.standingOn !== null) break;
     }
+    expect(sim.state.standingOn).toBe('floor:A:0');
     sim.dispatch({ k: 'command', name: 'come-here', x: 1e6 });
 
     let maxX = 0;
     for (const dt of dtSequence(3000)) {
       sim.step(dt);
       maxX = Math.max(maxX, sim.state.x);
+      expectRealGround(world, sim.state);
     }
     expect(maxX).toBeGreaterThan(830); // crossed the seam onto screen B
-    expect(sim.state.y).toBe(400); // and stayed on the shared floor
+    expect(sim.state.y).toBe(400); // and never left the shared ground line
+    expect(sim.state.standingOn).toBe('floor:B:0');
   });
 
   it('climbs from the lower screen onto the one above it', () => {
     const pack = testPack({ climbiness: 1, can: { fall: false }, speed: { climb: 200 } });
-    const sim = createSim({ pack, world: stacked(), seed: 77 });
+    const sim = createSim({ pack, world: desktop(STACK), seed: 77 });
     sim.dispatch({ k: 'command', name: 'place', x: 780, y: 800 });
     for (const dt of dtSequence(400)) {
       sim.step(dt);
@@ -502,39 +535,14 @@ describe('multi-display', () => {
     let reachedUpper = false;
     for (const dt of dtSequence(6000)) {
       sim.step(dt);
-      if (sim.state.climbingOn === 'wrUpper') reachedUpper = true;
+      if (sim.state.climbingOn === 'wall:U:r:0') reachedUpper = true;
     }
     expect(reachedUpper).toBe(true);
   });
 
-  /**
-   * The real layout on the dev machine: a 1440x900 laptop at 0,0 and a
-   * 1920x1080 external above it, offset right by 233. Their side edges do NOT
-   * line up, so climbing between them needs the mantle.
-   */
-  const offsetStack = (rev = 1): World => ({
-    rev,
-    bounds: { x: 0, y: -1080, w: 2153, h: 1980 },
-    regions: [
-      { x: 0, y: 0, w: 1440, h: 900 },
-      { x: 233, y: -1080, w: 1920, h: 1080 },
-    ],
-    platforms: [
-      { id: 'floorLaptop', x0: 0, x1: 1440, y: 852, kind: 'floor', passthrough: false },
-      // Only where the laptop is not below it.
-      { id: 'floorExternal', x0: 1440, x1: 2153, y: -48, kind: 'floor', passthrough: false },
-    ],
-    walls: [
-      { id: 'laptopR', x: 1440, y0: 0, y1: 900, side: -1 },
-      { id: 'externalR', x: 2153, y0: -1080, y1: 0, side: -1 },
-    ],
-    gravity: 900,
-    reducedMotion: false,
-  });
-
   it('mantles from a lower screen onto a higher one whose edges do not line up', () => {
     const pack = testPack({ climbiness: 1, can: { fall: false }, speed: { climb: 400 } });
-    const sim = createSim({ pack, world: offsetStack(), seed: 91 });
+    const sim = createSim({ pack, world: desktop(DEV), seed: 91 });
     sim.dispatch({ k: 'command', name: 'place', x: 1420, y: 852 });
     for (const dt of dtSequence(400)) {
       sim.step(dt);
@@ -545,64 +553,85 @@ describe('multi-display', () => {
     let mantled = false;
     for (const dt of dtSequence(6000)) {
       sim.step(dt);
-      if (sim.state.standingOn === 'floorExternal') mantled = true;
+      if (sim.state.standingOn === 'floor:ext:0') mantled = true;
     }
     expect(mantled).toBe(true);
   });
 
   it('lands on the bottom edge of the screen it was dropped on', () => {
-    const pack = testPack({ climbiness: 0 });
-    // Drop the pet in mid-air, high up on the UPPER screen.
-    const sim = createSim({ pack, world: stacked(), seed: 79 });
+    const world = desktop(STACK);
+    const sim = createSim({ pack: testPack({ climbiness: 0 }), world, seed: 79 });
+    // Dropped in mid-air, high up on the UPPER screen.
     sim.dispatch({ k: 'command', name: 'place', x: 400, y: 50 });
 
-    for (const dt of dtSequence(4000)) sim.step(dt);
-    // It stops at the first ground under it, not at the bottom of the desktop.
-    // Falling all the way through the screen you put it on reads as broken.
+    for (const dt of dtSequence(400)) sim.step(dt);
+    // Stops at the first ground under it, not at the bottom of the desktop.
+    // Falling through the screen you put it on reads as broken.
     expect(sim.state.y).toBe(400);
-    expect(sim.state.standingOn).toBe('seamUpper');
+    expect(sim.state.standingOn).toBe('seam:U:0');
+
+    // And it stays put for a while rather than dribbling straight off again.
+    for (const dt of dtSequence(600)) sim.step(dt);
+    expect(sim.state.y).toBe(400);
   });
 
-  it('still has a way down to the screen below', () => {
-    const pack = testPack({ climbiness: 0 });
-    const world: World = {
-      ...stacked(),
-      // Upper screen narrower than the lower one, as offset monitors are, so
-      // the seam has an end to walk off.
-      regions: [
-        { x: 0, y: 0, w: 500, h: 400 },
-        { x: 0, y: 400, w: 800, h: 400 },
-      ],
-      platforms: [
-        { id: 'seamUpper', x0: 0, x1: 500, y: 400, kind: 'floor', passthrough: true },
-        { id: 'floorLower', x0: 0, x1: 800, y: 800, kind: 'floor', passthrough: false },
-      ],
-      walls: [{ id: 'wrLower', x: 800, y0: 400, y1: 800, side: -1 }],
-    };
-    const sim = createSim({ pack, world, seed: 81 });
-    sim.dispatch({ k: 'command', name: 'place', x: 250, y: 50 });
-    for (const dt of dtSequence(400)) sim.step(dt);
-    expect(sim.state.standingOn).toBe('seamUpper');
+  /**
+   * The regression that made the drop-through necessary: with the seam solid
+   * and nothing reading `passthrough`, the pet climbed to the top monitor and
+   * could never come back — 0/12 autonomous runs descended.
+   *
+   * Deliberately no `come-here` in these: the pet has to manage on its own, or
+   * it is stranded on whichever screen it drifts to.
+   */
+  for (const [label, behavior] of [
+    ['on its own', { climbiness: 0 }],
+    ['even when it cannot climb', { climbiness: 0, can: { climb: false } }],
+  ] as const) {
+    it(`finds its way down from an upper screen ${label}`, () => {
+      const world = desktop(STACK);
+      const sim = createSim({ pack: testPack(behavior), world, seed: 81 });
+      sim.dispatch({ k: 'command', name: 'place', x: 400, y: 50 });
+      for (const dt of dtSequence(400)) {
+        sim.step(dt);
+        if (sim.state.standingOn !== null) break;
+      }
+      expect(sim.state.standingOn).toBe('seam:U:0');
 
-    // Keep calling it rightward. A walk bout is capped at 4s by the motion
-    // budget, so an undriven pet never covers the 250px to the seam's end —
-    // that is the budget working, not the descent failing.
-    let arrived = false;
-    for (const [i, dt] of dtSequence(120_000).entries()) {
-      if (i % 60 === 0) sim.dispatch({ k: 'command', name: 'come-here', x: 1e6 });
+      let arrived = false;
+      for (const dt of dtSequence(120_000)) {
+        sim.step(dt);
+        expectRealGround(world, sim.state);
+        if (sim.state.standingOn === 'floor:L:0') {
+          arrived = true;
+          break;
+        }
+      }
+      expect(arrived).toBe(true);
+    });
+  }
+
+  it('gets down from the external monitor on the real dev layout', () => {
+    const world = desktop(DEV);
+    const sim = createSim({ pack: testPack(), world, seed: 87 });
+    sim.dispatch({ k: 'command', name: 'place', x: 800, y: -400 });
+    for (const dt of dtSequence(600)) sim.step(dt);
+    expect(sim.state.standingOn).toBe('seam:ext:0');
+
+    let onLaptop = false;
+    for (const dt of dtSequence(200_000)) {
       sim.step(dt);
       expectRealGround(world, sim.state);
-      if (sim.state.standingOn === 'floorLower') {
-        arrived = true;
+      if (sim.state.standingOn === 'floor:laptop:0') {
+        onLaptop = true;
         break;
       }
     }
-    expect(arrived).toBe(true);
+    expect(onLaptop).toBe(true);
   });
 
   it('re-settles onto real screen when a monitor is unplugged', () => {
     const pack = testPack({ climbiness: 0 });
-    const sim = createSim({ pack, world: twoScreens(), seed: 83 });
+    const sim = createSim({ pack, world: desktop(SIDE_BY_SIDE), seed: 83 });
     sim.dispatch({ k: 'command', name: 'place', x: 1400, y: 480 });
     for (const dt of dtSequence(2000)) sim.step(dt);
     expect(sim.state.x).toBeGreaterThan(800);

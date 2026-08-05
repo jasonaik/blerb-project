@@ -30,4 +30,6 @@ export {
   type Span,
 } from './geom.js';
 
+export { buildDesktopGeometry, type ScreenInfo } from './desktop.js';
+
 export { rand, randRange, chance, weightedPick, seedFrom, type RngHolder } from './rng.js';

@@ -42,6 +42,13 @@ const MOTION_BUDGET = 0.3;
  */
 const WALL_GRAB = 24;
 
+/**
+ * Chance per behaviour decision of slipping through a seam to the screen
+ * below. Decisions land every few seconds, so this averages a couple of
+ * minutes on an upper monitor before the pet wanders down.
+ */
+const SEAM_DROP = 0.03;
+
 /** EMA time constant for motionEma, ms. ~30s of memory. */
 const MOTION_TAU_MS = 30_000;
 
@@ -182,6 +189,17 @@ export function createSim(opts: SimOptions): Sim {
     return best;
   }
 
+  /** Another platform continuing at the same height across `x`. */
+  function adjoining(from: Platform, x: number, y: number): Platform | undefined {
+    for (const p of world.platforms) {
+      if (p.id === from.id) continue;
+      if (Math.abs(p.y - y) > EPS) continue;
+      if (x < p.x0 - EPS || x > p.x1 + EPS) continue;
+      return p;
+    }
+    return undefined;
+  }
+
   /** Lowest platform spanning `x`, regardless of the pet's height. */
   function lowestPlatformAt(x: number): Platform | undefined {
     let best: Platform | undefined;
@@ -245,7 +263,37 @@ export function createSim(opts: SimOptions): Sim {
     else if (next !== 'fall') state.vx = 0;
   }
 
+  /**
+   * Occasionally slip down through a seam onto the screen below.
+   *
+   * This is the ONLY way off an upper monitor, and it has to exist. A seam —
+   * the stretch of a screen's bottom edge with another screen under it — never
+   * has a walk-off end: each end is either more ground at the same height, or
+   * the screen's own side edge, which carries a wall. Without this the pet
+   * climbs up to the top monitor and can never come back down, which is worse
+   * than the fall-through it replaced.
+   *
+   * Rare on purpose. The pet should stay where you put it for minutes, not
+   * dribble off the moment you look away.
+   */
+  function maybeDropThroughSeam(): boolean {
+    if (!pack.behavior.can.fall) return false;
+    const p = platformById(state.standingOn);
+    // Window ledges are passthrough too, but they have ends hanging over open
+    // air — they already have a way off, and stealing the pet off your title
+    // bar every couple of minutes is not charm.
+    if (!p?.passthrough || p.kind !== 'floor') return false;
+    if (!chance(state, SEAM_DROP)) return false;
+    // Start just below the surface. `stepFall` lands on any platform whose y
+    // it crosses, and starting exactly on this one would re-land immediately.
+    state.y = p.y + 1;
+    startFalling();
+    return true;
+  }
+
   function pickBehavior(): void {
+    if (maybeDropThroughSeam()) return;
+
     // Rule 4, enforced rather than aspired to: if the pet has been moving more
     // than its budget lately, walking is simply not on the menu.
     const mayWalk = state.motionEma < MOTION_BUDGET;
@@ -330,7 +378,11 @@ export function createSim(opts: SimOptions): Sim {
     const dir = Math.sign(nextX - x);
     if (dir === 0) return undefined;
     for (const w of world.walls) {
-      if (y < w.y0 - EPS || y > w.y1 + EPS) continue;
+      // `y0 + EPS`, not `y0 - EPS`: a pet level with a wall's TOP is standing
+      // on the ground above it, not up against it. Without this, a lower
+      // screen's side wall starts exactly on the upper screen's ground line
+      // and fences the pet off from half its own bottom edge.
+      if (y < w.y0 + EPS || y > w.y1 + EPS) continue;
       // side === -1: pet is left of the wall, so it blocks rightward travel.
       if (dir > 0 && w.side === -1 && w.x >= x - EPS && w.x <= nextX + EPS) return w;
       if (dir < 0 && w.side === 1 && w.x <= x + EPS && w.x >= nextX - EPS) return w;
@@ -560,9 +612,20 @@ export function createSim(opts: SimOptions): Sim {
       return;
     }
 
-    // 3. A ledge edge is a choice: mostly turn, occasionally step off.
-    //    Deliberately biased — a pet that constantly falls looks broken.
     if (platform && platform.id !== WORLD_FLOOR && (nextX < platform.x0 || nextX > platform.x1)) {
+      // 3. Running out of platform is only a cliff if nothing continues at the
+      //    same height. A screen's bottom edge is several platforms — floor
+      //    either side of a seam — and the joins between them are not edges.
+      const next = adjoining(platform, nextX, state.y);
+      if (next) {
+        state.standingOn = next.id;
+        state.x = nextX;
+        state.odometer += Math.abs(state.vx * dt);
+        return;
+      }
+
+      // 4. A real ledge edge is a choice: mostly turn, occasionally step off.
+      //    Deliberately biased — a pet that constantly falls looks broken.
       if (pack.behavior.can.fall && chance(state, 0.15)) {
         state.x = nextX;
         startFalling();
