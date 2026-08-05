@@ -155,8 +155,8 @@ Not built yet: sprite import tooling, and the whole game layer (sessions, retros
 
 Known rough edges:
 
-- Selective click-through has not been verified against a focused Task Manager, where Electron's mouse forwarding is known to stop working ([electron#33281](https://github.com/electron/electron/issues/33281), WONTFIX).
 - Three-display and L-shaped layouts are untested. The geometry is general; only two-screen layouts have been observed.
+- The pet is verifiably absent from screen captures, but that has been checked with automated captures rather than a live Zoom or Teams share.
 - The pet hides rather than drawing over the Start menu, Task View, Alt-Tab, or an exclusive-fullscreen game. Those live in z-bands a normal app cannot reach.
 
 ## More

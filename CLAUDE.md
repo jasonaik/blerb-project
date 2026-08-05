@@ -268,7 +268,13 @@ Measured 2026-08-05 on the dev machine: Win11, 1440×900 DIP @ 200% scale (2880�
 
 **Window platform walk: PASS, to the pixel.** A test window placed at physical `500,700 1200×700` produced a ledge at DIP `y=350, x=256..845`. Predicted `y=350, x=250..850`. The ~6px horizontal inset is exactly Windows' invisible resize border — i.e. `DWMWA_EXTENDED_FRAME_BOUNDS` correctly reporting the *visible* frame where `GetWindowRect` would have been wrong. Top edge matches exactly (no invisible border on top). DPI conversion is correct.
 
-**Spike B — selective click-through: PARTIAL, needs a human.** Implemented per plan: main-process `screen.getCursorScreenPoint()` poll at 30Hz as source of truth, plus a drag latch so the window stays interactive while the cursor leaves the stale bbox mid-drag. **Cannot be verified without driving a real mouse** — see the user checklist. The fallback if it proves unreliable is a fully click-through pet with tray-only interaction.
+**Spike B — selective click-through: PASS, verified by a human at a real mouse.** Implemented per plan: main-process `screen.getCursorScreenPoint()` poll at 30Hz as source of truth, plus a drag latch so the window stays interactive while the cursor leaves the stale bbox mid-drag.
+
+The test that mattered: **Task Manager opened, clicked to give it focus, then the pet clicked and dragged.** The pet followed the cursor and resumed wandering on release. This is the case [electron#33281](https://github.com/electron/electron/issues/33281) (WONTFIX) breaks — with `setIgnoreMouseEvents(…, {forward:true})`, DOM `mousemove` stops being delivered entirely once Task Manager has focus. Polling the cursor in **main** sidesteps it, because main never depended on the renderer being told anything.
+
+**So the tray-only fallback is dead — delete it from your mental model.** Do not reintroduce DOM `mousemove` for the hit test; it is the thing that was specifically shown not to work, and the failure only appears with a privileged window focused, which is exactly the case nobody tests.
+
+Still unverified by eye: that the pet stays visible to the human while absent from a live Zoom/Teams share. The A/B capture test passed, but a real share has not been run.
 
 **Multi-monitor + climbing: PASS, on real mixed-DPI hardware.** Dev machine layout: laptop `0,0 1440×900 @200%` and an external `233,-1080 1920×1080 @100%` — above and offset sideways, so their side edges do *not* line up.
 
