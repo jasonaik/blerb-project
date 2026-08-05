@@ -378,6 +378,16 @@ export function createSim(opts: SimOptions): Sim {
             setBehavior('sleep');
           } else if (e.name === 'wake') {
             setBehavior('idle');
+          } else if (e.name === 'place' && e.x !== undefined && e.y !== undefined) {
+            // Drag-and-drop: the host puts the pet's feet at a point and lets
+            // physics take over. This is how the pet gets ON TOP of a window,
+            // since it can't jump — the user lifts it there.
+            const b = world.bounds;
+            state.x = Math.min(Math.max(e.x, b.x), b.x + b.w);
+            state.y = Math.min(Math.max(e.y, b.y), b.y + b.h);
+            state.vx = 0;
+            state.vy = 0;
+            startFalling();
           }
           break;
 

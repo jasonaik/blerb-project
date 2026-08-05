@@ -16,6 +16,16 @@ pnpm install && node packages/petgen/scripts/make-blob-atlas.mjs && pnpm preview
 
 That opens a browser page with the pet walking around on a floor and some ledges. `d` toggles a debug overlay showing platform lines and the pet's ground anchor, `r` recenters, clicking calls the pet over.
 
+**The real thing** — pet on the actual desktop, over every window:
+
+```bash
+pnpm desktop
+```
+
+Tray icon → settings, recenter, quit. Right-click the pet for the same menu. Drag the pet to drop it on a window ledge (it can't climb; being carried is how it gets up there).
+
+Diagnostic env vars: `BLERB_DEBUG=1` logs each world scan (platform ids + coordinates), `BLERB_SOFTWARE=1` disables GPU compositing, `BLERB_ALLOW_CAPTURE=1` makes the pet visible to screen capture so it can be verified in a screenshot.
+
 The preview aliases `@blerb/*` to their **sources**, so edits to the sim are live without a build step. This is the inner loop — use it.
 
 ```bash
@@ -210,10 +220,27 @@ The shipped default is `packs/blob` — original art, CC0. The pack-import pipel
 
 ---
 
-## 13. Known unknowns
+## 13. Spike results and known unknowns
 
-- **Electron Spike A** — transparent window + GPU acceleration on this machine's Win11 hardware. Black first paint and flicker over maximized windows are documented (electron#27253, #10069); the fix (`disableHardwareAcceleration`) costs animation smoothness. **Not yet run.**
-- **Electron Spike B** — `setIgnoreMouseEvents(…, {forward:true})` + cursor-poll hit test, verified with Task Manager focused and across a DPI boundary. **Not yet run.**
+Measured 2026-08-05 on the dev machine: Win11, 1440×900 DIP @ 200% scale (2880×1800 physical), 24 cores, Electron 37.10.3, koffi 2.16.3.
+
+**Spike A — transparent + GPU: PASS.** GPU acceleration on, no black first paint, no flicker over maximized windows in repeated full-screen captures. `BLERB_SOFTWARE=1` exists as a fallback but is **not needed** on this hardware. `disable-features=CalculateNativeWinOcclusion` **is** required — without it Windows decides a transparent always-on-top window is occluded whenever a maximized window sits under it, and freezes the renderer's RAF.
+
+**Content protection: PASS, verified by A/B.** Identical captures with `captureProtection` off then on: pet present, then absent. `BLERB_ALLOW_CAPTURE=1` disables it for exactly this kind of automated check. *The other half — that the pet stays visible to the human while invisible to capture — is not machine-verifiable and needs eyes.*
+
+**Window platform walk: PASS, to the pixel.** A test window placed at physical `500,700 1200×700` produced a ledge at DIP `y=350, x=256..845`. Predicted `y=350, x=250..850`. The ~6px horizontal inset is exactly Windows' invisible resize border — i.e. `DWMWA_EXTENDED_FRAME_BOUNDS` correctly reporting the *visible* frame where `GetWindowRect` would have been wrong. Top edge matches exactly (no invisible border on top). DPI conversion is correct.
+
+**Spike B — selective click-through: PARTIAL, needs a human.** Implemented per plan: main-process `screen.getCursorScreenPoint()` poll at 30Hz as source of truth, plus a drag latch so the window stays interactive while the cursor leaves the stale bbox mid-drag. **Cannot be verified without driving a real mouse** — see the user checklist. The fallback if it proves unreliable is a fully click-through pet with tray-only interaction.
+
+**Performance — acceptable, improvable.** Naive full-screen clear+repaint at 60fps cost **53.9% of one core**. Two fixes brought it to **11.7%** (≈0.5% of total CPU on 24 cores), ~420MB RSS across 4 processes:
+  - skip frames whose `RenderFrame` is visually identical (the pet idles at 2fps and is stationary >70% of the time by design)
+  - clear only the union of the pet's previous and current rects, not 5.2 megapixels
+  - park the render loop entirely after ~1/3s idle, ticking the sim on a 100ms timer until something changes
+
+  Remaining split: renderer 5.2%, gpu-process 4.5%, main 2.0%. The gpu-process floor looks inherent to compositing a full-screen transparent always-on-top layer. Worth another pass before v1 — a smaller overlay window that follows the pet would likely remove most of it.
+
+**Still unknown:**
+- Multi-monitor. The overlay is currently **primary display only** — `createOverlayWindow` takes a `Display` and the plan calls for one window per `display.id`, but only one is spawned. Untested on a second monitor, and mixed-DPI is untested.
 - Whether the procedural gait (Phase 4) looks acceptable on real Quagsire art. If it does, the pivot-point rig editor never gets built.
-
-Record spike outcomes here when they're run — they gate Phase 2.
+- Behaviour across sleep/wake and display hotplug.
+- Exclusive-fullscreen games (borderless is handled; true exclusive can't be drawn over by anything and the app hides).

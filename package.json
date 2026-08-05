@@ -15,7 +15,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
-    "preview": "pnpm --filter @blerb/petgen preview packs/blob"
+    "preview": "pnpm --filter @blerb/petgen preview packs/blob",
+    "desktop": "pnpm --filter blerb-desktop start"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "types": ["node"],
+    "paths": {
+      "@blerb/core": ["../../packages/core/src/index.ts"],
+      "@blerb/pack": ["../../packages/pack/src/index.ts"],
+      "@blerb/render-canvas": ["../../packages/render-canvas/src/index.ts"]
+    }
+  },
+  "include": ["src/main/**/*.ts", "src/preload/**/*.ts", "src/shared/**/*.ts", "tsup.config.ts", "vite.config.ts"]
+}

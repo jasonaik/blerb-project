@@ -1,0 +1,23 @@
+{
+  "name": "blerb-desktop",
+  "version": "0.0.0",
+  "private": true,
+  "description": "blerb desktop overlay — the pet that walks on everything",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsup && vite build",
+    "start": "pnpm build && electron .",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p src/renderer/tsconfig.json"
+  },
+  "dependencies": {
+    "koffi": "^2.9.0"
+  },
+  "devDependencies": {
+    "@blerb/core": "workspace:*",
+    "@blerb/pack": "workspace:*",
+    "@blerb/render-canvas": "workspace:*",
+    "electron": "^37.0.0",
+    "tsup": "^8.3.5",
+    "vite": "^6.0.5"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "paths": {
+      "@blerb/core": ["../../../../packages/core/src/index.ts"],
+      "@blerb/pack": ["../../../../packages/pack/src/index.ts"],
+      "@blerb/render-canvas": ["../../../../packages/render-canvas/src/index.ts"]
+    }
+  },
+  "include": ["**/*.ts", "../shared/ipc.ts"]
+}

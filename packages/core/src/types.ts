@@ -60,7 +60,7 @@ export type PetEvent =
   | { k: 'pointer'; x: number; y: number; kind: 'move' | 'down' | 'up' }
   | { k: 'hide'; reason: HideReason }
   | { k: 'show' }
-  | { k: 'command'; name: 'come-here' | 'sleep' | 'wake' | 'recenter'; x?: number; y?: number }
+  | { k: 'command'; name: 'come-here' | 'sleep' | 'wake' | 'recenter' | 'place'; x?: number; y?: number }
   /** Emitted after a long gap (sleep, backgrounded tab) instead of fast-forwarding. */
   | { k: 'resume'; gapMs: number };
 

@@ -139,6 +139,20 @@ describe('physics', () => {
     expect(sim.state.behavior).toBe('fall');
   });
 
+  it('place drops the pet and it lands on the platform below', () => {
+    const pack = testPack();
+    const world = simpleWorld(800, 400);
+    world.platforms.push({ id: 'win', x0: 200, x1: 600, y: 250, kind: 'ledge', passthrough: true });
+
+    const sim = createSim({ pack, world, seed: 41 });
+    sim.dispatch({ k: 'command', name: 'place', x: 400, y: 100 });
+    expect(sim.state.behavior).toBe('fall');
+
+    for (const dt of dtSequence(300)) sim.step(dt);
+    expect(sim.state.standingOn).toBe('win');
+    expect(sim.state.y).toBe(250);
+  });
+
   it('rides a platform that moves', () => {
     const pack = testPack();
     const world = simpleWorld(800, 400);

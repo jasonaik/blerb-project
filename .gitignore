@@ -12,3 +12,6 @@ release/
 # See CLAUDE.md § IP. Third-party character art is never committed.
 packs/*/
 !packs/blob/
+
+# Electron build output
+apps/desktop/dist/
