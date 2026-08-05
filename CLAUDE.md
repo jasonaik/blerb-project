@@ -11,7 +11,7 @@ The full reasoning behind every decision here lives in the plan at `~/.claude/pl
 ## 1. How do I see a pet walk in 10 seconds
 
 ```bash
-pnpm install && node packages/petgen/scripts/make-blob-atlas.mjs && pnpm preview
+pnpm install && pnpm preview
 ```
 
 That opens a browser page with the pet walking around on a floor and some ledges. `d` toggles a debug overlay showing platform lines and the pet's ground anchor, `r` recenters, clicking calls the pet over.
@@ -37,9 +37,15 @@ The preview aliases `@blerb/*` to their **sources**, so edits to the sim are liv
 
 ```bash
 pnpm test          # @blerb/core and @blerb/game determinism + contract tests
-pnpm typecheck     # tsc --build across the workspace
+pnpm typecheck     # tsc --build, then every package's and app's own typecheck
 pnpm lint          # includes the pure-packages rule, see §4
+pnpm build         # tsc --build. Packages emit ESM + .d.ts to dist/
+pnpm blob          # regenerate packs/blob/atlas.png from its generator
 ```
+
+**Never write `--filter './packages/**'` in a root script.** pnpm scripts run through `cmd.exe`, which does not strip single quotes, so the filter arrives with the quotes attached and matches **nothing** — silently, with exit code 0. Use double quotes. This shipped broken once and `pnpm build` was a no-op for two phases; the app only worked because `tsc --build` happened to emit the same files.
+
+`README.md` is the version of this section written for a human who just wants to run the thing.
 
 ---
 
@@ -136,7 +142,7 @@ The renderers have **no render loop**. They paint on receipt of a state message,
 
 `packages/pack/src/schema.ts` is the single source of truth. Types are `z.infer`'d from it; `petgen doctor` is `safeParse` plus the semantic checks in `resolve.ts`. Don't hand-write a `Pet` interface anywhere else.
 
-A complete, working pet (`packs/blob/pet.json`):
+A complete, working pet (`packs/blob/pet.json`, minus its `aliases` block):
 
 ```json
 {
@@ -146,15 +152,19 @@ A complete, working pet (`packs/blob/pet.json`):
   "atlas": { "src": "atlas.png" },
   "grid": { "w": 32, "h": 32, "cols": 4 },
   "animations": {
-    "idle": { "fps": 2, "frames": [0, 1] },
-    "walk": { "fps": 8, "frames": [2, 0, 3, 0], "designSpeed": 40 }
+    "idle":  { "fps": 2,   "frames": [0, 1] },
+    "walk":  { "fps": 8,   "frames": [2, 0, 3, 0], "designSpeed": 40 },
+    "climb": { "fps": 5,   "frames": [4, 5],       "designSpeed": 28 },
+    "cling": { "fps": 1.5, "frames": [6, 7] }
   }
 }
 ```
 
-**That file is the format's canary.** If a schema change makes it longer or more complex, the change is wrong.
+**That file is the format's canary.** It gets longer when the *pet* gains art — that's fine. If a **schema** change makes it longer or more complex, the change is wrong. Two animations is still a complete pet; the other two are aliased away in a sparse pack.
 
 `pack.animation(name)` never throws and never returns undefined — it follows `aliases`, then falls back. A sparse pack should look slightly wrong, not crash the render loop.
+
+**Authoring `climb`/`cling` cells:** draw them **sideways**, not upright. On a wall the renderer rotates the sprite ±90° about its anchor, so in cell space the *bottom edge is the wall* and *+x is the direction of travel along it*. A climb pose is therefore a creature hugging the ground and reaching to its right. Two consequences that are easy to get wrong: the eyes must be stacked in cell-**y** (that becomes screen-x, so they read as a face looking out at you) rather than spread in cell-x (which reads as one eye above the other); and limbs must overlap the body ellipse, because the body tapers toward its ends and a hand placed past the taper renders as a detached blob.
 
 ---
 
@@ -221,7 +231,7 @@ Everything the pet can do between monitors falls out of that: climb the outer ed
 
 Two screens rarely line up exactly. When the pet climbs to the top of a wall it checks for a **mantle target** — a platform within 96px above the lip — and hauls itself up. That is what gets it from a laptop onto an external monitor sitting above and offset sideways; without it the pet reaches the corner and is stuck.
 
-Walls carry a `side` (the direction from wall to pet). Climbing rotates the sprite by `side * π/2` about its anchor so its feet meet the surface.
+Walls carry a `side` (the direction from wall to pet). Climbing rotates the sprite by `side * π/2` about its anchor so its feet meet the surface, and sets `facing = side * climbDir` so it goes head-first. **Both terms are needed.** The rotation's handedness flips with the wall, so which mirror means "head up" flips with it too — `facing = -climbDir` looks correct on a right-hand wall and renders the pet upside down on a left-hand one. Invisible while `climb` was aliased to `walk` on a symmetric blob; obvious the moment the art has a head. Tested via `facing * sin(rotation)`, the direction the nose actually points, rather than via `facing` alone.
 
 ## 11. Coordinate systems
 

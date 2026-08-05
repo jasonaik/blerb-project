@@ -283,6 +283,30 @@ describe('climbing', () => {
     expect(sim.frame().rotation).toBeCloseTo(Math.PI / 2, 5);
   });
 
+  it('climbs head-first upward on both edges of the desktop', () => {
+    // The renderer composes rotation with the facing mirror, so this is the
+    // direction the sprite's nose actually points on screen. Asserting it
+    // rather than `facing` is the difference between testing the picture and
+    // testing a number that only means something once you know which wall.
+    const noseY = (f: { facing: number; rotation: number }) =>
+      f.facing * Math.sin(f.rotation);
+
+    for (const [startX, dir, wall] of [
+      [780, 1, 'wr'],
+      [20, -1, 'wl'],
+    ] as const) {
+      const sim = createSim({ pack: alwaysClimbs(), world: simpleWorld(800, 400), seed: 61 });
+      walkAt(sim, startX, 400, dir);
+      for (const dt of dtSequence(600)) {
+        sim.step(dt);
+        if (sim.state.climbingOn !== null) break;
+      }
+      expect(sim.state.climbingOn).toBe(wall);
+      expect(sim.state.climbDir).toBe(-1);
+      expect(noseY(sim.frame())).toBeLessThan(-0.99); // up, not down
+    }
+  });
+
   it('falls if the wall it was climbing disappears', () => {
     const sim = createSim({ pack: alwaysClimbs(), world: simpleWorld(800, 400), seed: 59 });
     walkAt(sim, 780, 400, 1);

@@ -7,7 +7,7 @@
     "petgen": "./dist/cli.js"
   },
   "scripts": {
-    "build": "tsup src/cli.ts --format esm --clean",
+    "build": "tsc --build",
     "typecheck": "tsc --build && tsc --noEmit -p preview/tsconfig.json",
     "petgen": "tsx src/cli.ts",
     "preview": "tsx src/cli.ts preview",

@@ -10,13 +10,14 @@
     "node": ">=20.11"
   },
   "scripts": {
-    "build": "pnpm -r --filter './packages/**' build",
-    "typecheck": "tsc --build && pnpm -r --filter './packages/**' --filter './apps/**' typecheck",
+    "build": "tsc --build",
+    "typecheck": "tsc --build && pnpm -r --filter \"./packages/**\" --filter \"./apps/**\" typecheck",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
     "preview": "pnpm --filter @blerb/petgen preview packs/blob",
-    "desktop": "pnpm --filter blerb-desktop start"
+    "desktop": "pnpm build && pnpm --filter blerb-desktop start",
+    "blob": "node packages/petgen/scripts/make-blob-atlas.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

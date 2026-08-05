@@ -12,7 +12,7 @@
     }
   },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --clean",
+    "build": "tsc --build",
     "typecheck": "tsc --build"
   },
   "dependencies": {

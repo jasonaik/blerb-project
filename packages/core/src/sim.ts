@@ -277,9 +277,12 @@ export function createSim(opts: SimOptions): Sim {
     state.y = Math.min(Math.max(state.y, w.y0), w.y1);
     state.vx = 0;
     state.vy = 0;
-    // Face along the direction of travel; the 90 degree rotation in
-    // deriveFrame is what puts the feet against the surface.
-    state.facing = dir === -1 ? 1 : -1;
+    // Face along the direction of travel. The 90 degree rotation in
+    // deriveFrame puts the feet against the surface, and `side` decides which
+    // way round that rotation goes — so which mirror means "head up" flips
+    // with it. `side * dir` is the product that keeps the pet climbing head
+    // first on both edges of the desktop; `-dir` is right only on the right.
+    state.facing = (w.side * dir) as -1 | 1;
     setBehavior('climb');
   }
 

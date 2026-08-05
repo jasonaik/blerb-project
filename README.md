@@ -1,0 +1,168 @@
+# blerb
+
+A desktop screen pet for Windows 11. A sprite lives on top of everything — the desktop, your editor, Chrome, the taskbar — wanders around, stands on the top edges of your real windows, climbs the sides of the screen, and walks between monitors.
+
+It is also, eventually, a productivity game. That layer isn't built yet; see [Status](#status).
+
+<!-- A screenshot goes well here once you have one you like. -->
+
+---
+
+## Requirements
+
+| | |
+|---|---|
+| OS | Windows 11. Developed and tested only there. Windows 10 2004+ has the APIs but is unverified. |
+| Node | 20.11 or newer |
+| pnpm | 9 (`npm install -g pnpm`) |
+
+Everything is JavaScript — there is no native compilation step and no `electron-rebuild`. Win32 calls go through [koffi](https://koffi.dev/), which ships prebuilt.
+
+## Run it
+
+```bash
+pnpm install
+```
+
+```bash
+pnpm desktop
+```
+
+That builds the workspace and launches the overlay. What you should see:
+
+- A small blue blob walking along the bottom of your screen, **on top of the taskbar** and every window.
+- A tray icon (it's the pet's face).
+- The pet still visible after Alt-Tab, and no taskbar button of its own.
+
+It takes a few seconds the first time while TypeScript builds. Quit from the tray, or the **Quit blerb** button in settings — closing windows doesn't quit a tray app.
+
+## The settings GUI
+
+Open it from the **tray icon → Settings…**, by **double-clicking the tray icon**, or by **right-clicking the pet**.
+
+| Setting | Default | What it does |
+|---|---|---|
+| Pet visible | on | Hides the pet without quitting. It stops moving entirely while hidden. |
+| Invisible in screen capture | **on** | Sets `WDA_EXCLUDEFROMCAPTURE`. Windows itself keeps the pet out of screen shares and recordings while leaving it visible to you. |
+| Start with Windows | off | Standard login item. |
+| Pet size | 2× | 1–4×. Integer scales only, because the art is pixel art. |
+| Can climb walls | on | Whether the pet clings to and climbs the outer edges of the desktop. |
+| Debug overlay | off | Draws the platforms and walls the pet believes in. Unglamorous and the fastest way to see why it's standing somewhere odd. |
+
+Settings and the pet's last position are stored in `%APPDATA%\blerb-desktop\` as `settings.json` and `pet-snapshot.json`. Delete them to reset.
+
+The tray menu carries the same toggles plus **Recenter pet**, for when it has wandered somewhere you can't reach.
+
+## Playing with the pet
+
+- **Drag it.** Left-click and drag anywhere, including onto another monitor. It falls from wherever you drop it. This is the only way to get it onto a window ledge — it can't jump.
+- **Right-click it** for the menu.
+- **Leave it alone.** It wanders, sits, sleeps, and sometimes climbs a wall on its own. Ignoring it costs nothing and changes nothing.
+
+Everywhere else on screen, clicks pass straight through to whatever is underneath.
+
+## Multiple monitors
+
+The pet treats your whole desktop as **one world with holes in it**, not as several worlds. Two rules produce everything:
+
+- a **floor** exists along a screen's bottom edge only where no screen sits below it
+- a **wall** exists along a screen's side edge only where no screen sits alongside it
+
+So the pet walks across the seam between two adjacent monitors, falls through the region above a lower screen onto it, and climbs the outer edge of the desktop. Where two screens are offset — a laptop below and an external above and to one side — it climbs to the corner and **mantles**: hauls itself up onto a floor within 96px above the lip.
+
+Mixed DPI is handled: one window per display at that display's own scale factor, never one big window spanning everything.
+
+## Seeing a pet walk without launching Electron
+
+```bash
+pnpm preview
+```
+
+Opens a browser page with the pet walking on a floor with a few ledges. This is the inner development loop — the preview aliases `@blerb/*` to their **sources**, so edits to the simulation are live with no build step.
+
+| | |
+|---|---|
+| `d` | toggle the debug overlay |
+| `r` | recenter |
+| `q` | close |
+| click | call the pet over |
+
+## Development
+
+```bash
+pnpm test        # deterministic simulation + design-contract tests
+```
+
+```bash
+pnpm typecheck   # every package and app, including the preview harness
+```
+
+```bash
+pnpm lint        # includes the rule keeping @blerb/core and @blerb/game pure
+```
+
+```bash
+pnpm build       # tsc --build across the workspace
+```
+
+```bash
+pnpm blob        # regenerate packs/blob/atlas.png from its generator script
+```
+
+Diagnostic environment variables:
+
+| | |
+|---|---|
+| `BLERB_DEBUG=1` | log every world scan (screens, floors, walls) and each pet state change |
+| `BLERB_CLIMBY=1` | climb at every wall instead of ~45% of the time — exercises the multi-monitor path without waiting on dice |
+| `BLERB_SOFTWARE=1` | disable GPU compositing |
+| `BLERB_ALLOW_CAPTURE=1` | let screen capture see the pet, so it can be verified in a screenshot |
+
+## Pets
+
+The shipped pet is `packs/blob` — original CC0 art, generated by a script in `packages/petgen/scripts/`. A pet is a directory with a `pet.json` and an `atlas.png`, and the complete working example is 18 lines:
+
+```json
+{
+  "format": "blerb-pet/1",
+  "id": "blob", "name": "Blob", "author": "blerb", "license": "CC0-1.0",
+  "pixelArt": true,
+  "atlas": { "src": "atlas.png" },
+  "grid": { "w": 32, "h": 32, "cols": 4 },
+  "animations": {
+    "idle":  { "fps": 2,   "frames": [0, 1] },
+    "walk":  { "fps": 8,   "frames": [2, 0, 3, 0], "designSpeed": 40 },
+    "climb": { "fps": 5,   "frames": [4, 5],       "designSpeed": 28 },
+    "cling": { "fps": 1.5, "frames": [6, 7] }
+  }
+}
+```
+
+Missing animations degrade rather than crash — a pack with only `idle` still runs. The import tooling (`petgen from-sheet`, `from-gif`, `from-image`) is designed but not built yet.
+
+## Privacy
+
+- **There is no network code in this project.** Not disabled — absent.
+- Nothing leaves your machine, because nothing has anywhere to go.
+- The only files written are the two in `%APPDATA%\blerb-desktop\` described above.
+- The game layer, when it exists, will record `{bucket, minutes}` and never a URL, window title, or file path.
+
+## Status
+
+Built and working: the simulation core, the pack format, the canvas renderer, the preview harness, and the Electron overlay — walking, falling, dragging, climbing, and full multi-monitor roaming.
+
+Not built yet: sprite import tooling, and the whole game layer (sessions, retrospective XP, app classification, breaks). The design for those is settled and deliberately evidence-led — including a decision *not* to infer focus or attention, because the best published detector is ~75% accurate and its characteristic failure is firing hardest at someone quietly concentrating.
+
+Known rough edges:
+
+- Selective click-through has not been verified against a focused Task Manager, where Electron's mouse forwarding is known to stop working ([electron#33281](https://github.com/electron/electron/issues/33281), WONTFIX).
+- Three-display and L-shaped layouts are untested. The geometry is general; only two-screen layouts have been observed.
+- The pet hides rather than drawing over the Start menu, Task View, Alt-Tab, or an exclusive-fullscreen game. Those live in z-bands a normal app cannot reach.
+
+## More
+
+[`CLAUDE.md`](CLAUDE.md) is the operating summary: the verified platform constraints, the design contract, the monorepo import rules, and the measured spike results. Read it before changing anything — several of its constraints are there because the obvious approach was tried and doesn't work.
+
+## Licence
+
+MIT for the code. `packs/blob` is CC0.

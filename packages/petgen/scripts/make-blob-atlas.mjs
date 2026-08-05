@@ -6,9 +6,18 @@
  * Node exists and before `pnpm install`. That matters: it removes a chicken-
  * and-egg problem where you can't see a pet until the toolchain is fully up.
  *
- * Draws a 4-cell 32x32 walk cycle:
- *   0  idle, neutral        1  idle, breathing in
- *   2  walk, contact pose   3  walk, passing pose
+ * 8 cells, 32x32, laid out 4 across / 2 down:
+ *   0  idle, neutral         1  idle, breathing in
+ *   2  walk, contact pose    3  walk, passing pose
+ *   4  climb, reach          5  climb, pull
+ *   6  cling, settled        7  cling, breathing
+ *
+ * WHY THE CLIMB CELLS LOOK SIDEWAYS: on a wall the renderer rotates the sprite
+ * by +-90 degrees about its anchor so the feet meet the surface (see
+ * deriveFrame in @blerb/core). In cell space that means the bottom edge is the
+ * wall and +x is the direction of travel *along* it. So a climb pose is drawn
+ * as a blob hugging the ground and reaching to its right, and comes out as a
+ * blob hugging the wall and reaching upward. Facing flips it for the way down.
  *
  * Replace this with real art whenever you like — nothing depends on it beyond
  * packs/blob/pet.json, and that file is the 12-line example the format has to
@@ -23,9 +32,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const CELL = 32;
-const FRAMES = 4;
-const W = CELL * FRAMES;
-const H = CELL;
+const COLS = 4;
 
 // A friendly blue blob. Evokes a certain water-type without being it —
 // see CLAUDE.md § IP for why the shipped default pet is original art.
@@ -35,17 +42,96 @@ const BELLY = [0x9a, 0xc9, 0xe8, 0xff];
 const EYE_WHITE = [0xf4, 0xfa, 0xff, 0xff];
 const PUPIL = [0x22, 0x33, 0x44, 0xff];
 
-/** Per-frame pose. y offsets are in px; positive is down. */
+const EYE = [2.4, 2.6];
+const PUPIL_R = [1.1, 1.3];
+const PUPIL_OFF = [0.4, 0.5];
+/** Smaller, and looking the way it's going. A flattened pose has less face to work with. */
+const WALL_EYE = { eye: [1.9, 1.9], pupil: [1.0, 1.0], pupilOff: [0.5, 0] };
+/** Hanging on takes effort and the pet is resting — half-lidded, looking back. */
+const DROWSY = { eye: [1.9, 1.5], pupil: [0.95, 0.85], pupilOff: [-0.4, 0.1] };
+
+/**
+ * Per-frame pose. Ellipses are [cx, cy, rx, ry] in cell-local px, +y down.
+ * `nubs` are the feet on the ground and the gripping hands on a wall — same
+ * shapes doing both jobs, which is the whole trick that keeps this 8 cells.
+ */
 const POSES = [
-  { bodyDy: 0, bodyRy: 9.0, footL: [11, 29], footR: [21, 29], eyeDy: 0 },
-  { bodyDy: 0.6, bodyRy: 8.4, footL: [11, 29], footR: [21, 29], eyeDy: 0.4 },
-  { bodyDy: -0.4, bodyRy: 9.0, footL: [8.5, 29], footR: [22.5, 29.5], eyeDy: -0.3 },
-  { bodyDy: 0.8, bodyRy: 8.6, footL: [13, 29.5], footR: [19, 29], eyeDy: 0.5 },
+  // 0 — idle, neutral
+  {
+    body: [16, 18, 10, 9.0],
+    belly: [16, 21, 6.5, 5.2],
+    nubs: [[11, 29, 4, 2.6], [21, 29, 4, 2.6]],
+    eyes: [[12.5, 15.5], [19.5, 15.5]],
+  },
+  // 1 — idle, breathing in: settles a little and widens
+  {
+    body: [16, 18.6, 10, 8.4],
+    belly: [16, 21.6, 6.5, 5.2],
+    nubs: [[11, 29, 4, 2.6], [21, 29, 4, 2.6]],
+    eyes: [[12.5, 15.9], [19.5, 15.9]],
+  },
+  // 2 — walk, contact: feet apart, body lifted
+  {
+    body: [16, 17.6, 10, 9.0],
+    belly: [16, 20.6, 6.5, 5.2],
+    nubs: [[8.5, 29, 4, 2.6], [22.5, 29.5, 4, 2.6]],
+    eyes: [[12.5, 15.2], [19.5, 15.2]],
+  },
+  // 3 — walk, passing: feet together, body low
+  {
+    body: [16, 18.8, 10, 8.6],
+    belly: [16, 21.8, 6.5, 5.2],
+    nubs: [[13, 29.5, 4, 2.6], [19, 29, 4, 2.6]],
+    eyes: [[12.5, 16.0], [19.5, 16.0]],
+  },
+  // 4 — climb, reach: flattened against the surface, leading hand thrown far
+  //     ahead, trailing hand tucked under the body.
+  //     The eyes are stacked in y, not spread in x like the ground poses. That
+  //     is deliberate: the 90 degree rotation turns cell-y into screen-x, so
+  //     stacked-in-cell reads as a face looking out at you from the wall.
+  //     Spread-in-cell would read as one eye above the other.
+  {
+    body: [14.6, 22.4, 10.4, 6.9],
+    belly: [14.6, 25.2, 6.4, 3.4],
+    nubs: [[23.5, 28.6, 6.5, 2.4], [7.5, 29.2, 4.5, 2.3]],
+    eyes: [[19.5, 19.7], [19.5, 25.1]],
+    ...WALL_EYE,
+  },
+  // 5 — climb, pull: the body has hauled itself forward past the leading arm,
+  //     trailing arm left behind. Same two limbs, opposite roles.
+  {
+    body: [17.0, 22.8, 10.2, 6.8],
+    belly: [17.0, 25.6, 6.3, 3.3],
+    nubs: [[21.0, 29.2, 4.5, 2.3], [6.5, 28.6, 6.0, 2.4]],
+    eyes: [[21.5, 20.1], [21.5, 25.5]],
+    ...WALL_EYE,
+  },
+  // 6 — cling, settled: both arms planted, pressed as flat as it gets
+  {
+    body: [16, 23.0, 9.9, 6.4],
+    belly: [16, 25.6, 6.1, 3.1],
+    nubs: [[9.5, 28.9, 5.2, 2.5], [22.5, 28.9, 5.2, 2.5]],
+    eyes: [[20.0, 20.4], [20.0, 25.6]],
+    ...DROWSY,
+  },
+  // 7 — cling, breathing: the only motion available to something holding on
+  {
+    body: [16, 22.6, 9.7, 6.7],
+    belly: [16, 25.3, 6.0, 3.3],
+    nubs: [[9.5, 28.9, 5.2, 2.5], [22.5, 28.9, 5.2, 2.5]],
+    eyes: [[20.0, 20.0], [20.0, 25.2]],
+    ...DROWSY,
+  },
 ];
+
+const FRAMES = POSES.length;
+const ROWS = Math.ceil(FRAMES / COLS);
+const W = CELL * COLS;
+const H = CELL * ROWS;
 
 const px = new Uint8Array(W * H * 4); // transparent
 
-const inEllipse = (x, y, cx, cy, rx, ry) => {
+const inEllipse = (x, y, [cx, cy, rx, ry]) => {
   const dx = (x - cx) / rx;
   const dy = (y - cy) / ry;
   return dx * dx + dy * dy <= 1;
@@ -53,15 +139,26 @@ const inEllipse = (x, y, cx, cy, rx, ry) => {
 
 /** Is (x,y) part of the character silhouette for this pose? */
 function solid(pose, x, y) {
-  if (inEllipse(x, y, 16, 18 + pose.bodyDy, 10, pose.bodyRy)) return true;
-  if (inEllipse(x, y, pose.footL[0], pose.footL[1], 4, 2.6)) return true;
-  if (inEllipse(x, y, pose.footR[0], pose.footR[1], 4, 2.6)) return true;
+  if (inEllipse(x, y, pose.body)) return true;
+  for (const n of pose.nubs) if (inEllipse(x, y, n)) return true;
   return false;
 }
 
+/** A 1px darker rim wherever the silhouette meets empty space. */
+function isEdge(pose, x, y) {
+  return (
+    !solid(pose, x - 1, y) ||
+    !solid(pose, x + 1, y) ||
+    !solid(pose, x, y - 1) ||
+    !solid(pose, x, y + 1)
+  );
+}
+
 function set(frame, x, y, rgba) {
-  if (x < 0 || y < 0 || x >= CELL || y >= H) return;
-  const i = ((y * W) + frame * CELL + x) * 4;
+  if (x < 0 || y < 0 || x >= CELL || y >= CELL) return;
+  const ox = (frame % COLS) * CELL + x;
+  const oy = Math.floor(frame / COLS) * CELL + y;
+  const i = (oy * W + ox) * 4;
   px[i] = rgba[0];
   px[i + 1] = rgba[1];
   px[i + 2] = rgba[2];
@@ -74,36 +171,33 @@ for (let f = 0; f < FRAMES; f++) {
   for (let y = 0; y < CELL; y++) {
     for (let x = 0; x < CELL; x++) {
       if (!solid(pose, x, y)) continue;
-
-      // 1px darker rim wherever the silhouette meets empty space. Cheap, and
-      // it's what stops the sprite dissolving into a light background.
-      const edge =
-        !solid(pose, x - 1, y) ||
-        !solid(pose, x + 1, y) ||
-        !solid(pose, x, y - 1) ||
-        !solid(pose, x, y + 1);
-
-      if (edge) {
-        set(f, x, y, OUTLINE);
-      } else if (inEllipse(x, y, 16, 21 + pose.bodyDy, 6.5, 5.2)) {
-        set(f, x, y, BELLY);
-      } else {
-        set(f, x, y, BODY);
-      }
+      // Without the rim the sprite dissolves into a light background — and the
+      // pet spends its life on top of arbitrary windows.
+      if (isEdge(pose, x, y)) set(f, x, y, OUTLINE);
+      else if (inEllipse(x, y, pose.belly)) set(f, x, y, BELLY);
+      else set(f, x, y, BODY);
     }
   }
 
-  // Eyes, drawn over the body so they sit on top of the belly patch.
-  for (const ex of [12.5, 19.5]) {
-    const ey = 15.5 + pose.eyeDy;
+  // Eyes, drawn over the body. Clipped to the *interior* so an eye placed near
+  // the leading edge — which the climb poses do deliberately — eats into the
+  // body rather than punching a hole through the outline.
+  const eyeR = pose.eye ?? EYE;
+  const pupilR = pose.pupil ?? PUPIL_R;
+  const pupilOff = pose.pupilOff ?? PUPIL_OFF;
+
+  for (const [ex, ey] of pose.eyes) {
     for (let y = 0; y < CELL; y++) {
       for (let x = 0; x < CELL; x++) {
-        if (inEllipse(x, y, ex, ey, 2.4, 2.6)) set(f, x, y, EYE_WHITE);
+        if (!solid(pose, x, y) || isEdge(pose, x, y)) continue;
+        if (inEllipse(x, y, [ex, ey, eyeR[0], eyeR[1]])) set(f, x, y, EYE_WHITE);
       }
     }
     for (let y = 0; y < CELL; y++) {
       for (let x = 0; x < CELL; x++) {
-        if (inEllipse(x, y, ex + 0.4, ey + 0.5, 1.1, 1.3)) set(f, x, y, PUPIL);
+        if (!solid(pose, x, y) || isEdge(pose, x, y)) continue;
+        const p = [ex + pupilOff[0], ey + pupilOff[1], pupilR[0], pupilR[1]];
+        if (inEllipse(x, y, p)) set(f, x, y, PUPIL);
       }
     }
   }

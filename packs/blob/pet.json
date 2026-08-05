@@ -9,10 +9,11 @@
   "grid": { "w": 32, "h": 32, "cols": 4 },
   "animations": {
     "idle": { "fps": 2, "frames": [0, 1] },
-    "walk": { "fps": 8, "frames": [2, 0, 3, 0], "designSpeed": 40 }
+    "walk": { "fps": 8, "frames": [2, 0, 3, 0], "designSpeed": 40 },
+    "climb": { "fps": 5, "frames": [4, 5], "designSpeed": 28 },
+    "cling": { "fps": 1.5, "frames": [6, 7] }
   },
   "aliases": {
-    "sit": "idle", "sleep": "idle", "fall": "idle", "land": "idle",
-    "stretch": "idle", "climb": "walk", "cling": "idle"
+    "sit": "idle", "sleep": "idle", "fall": "idle", "land": "idle", "stretch": "idle"
   }
 }

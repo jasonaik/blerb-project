@@ -4,6 +4,7 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "composite": false,
     "declaration": false,
+    "declarationMap": false,
     "noEmit": true,
     "paths": {
       "@blerb/pack": ["../../pack/src/index.ts"],
