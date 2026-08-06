@@ -500,7 +500,7 @@ describe('windows as places', () => {
     regions: [{ x: 0, y: 0, w: 800, h: 400 }],
     platforms: [
       { id: 'floor', x0: 0, x1: 800, y: 400, kind: 'floor', passthrough: false },
-      { id: 'winFloor', x0: 200, x1: 500, y: 300, kind: 'ledge', passthrough: true },
+      { id: 'winFloor', x0: 200, x1: 500, y: 300, kind: 'ledge', passthrough: true, ownerX: 200 },
     ],
     walls: walled
       ? [
@@ -508,7 +508,7 @@ describe('windows as places', () => {
           { id: 'winR', x: 500, y0: 120, y1: 300, side: -1 },
         ]
       : [],
-    ceilings: [{ id: 'winTop', x0: 200, x1: 500, y: 120 }],
+    ceilings: [{ id: 'winTop', x0: 200, x1: 500, y: 120, ownerX: 200 }],
     gravity: 900,
     reducedMotion: false,
   });
@@ -538,6 +538,79 @@ describe('windows as places', () => {
       }
     }
     expect(out).toBe(true);
+  });
+
+  it('rides a window being dragged sideways', () => {
+    const world = boxed(false);
+    const sim = createSim({ pack: testPack(), world, seed: 207 });
+    sim.dispatch({ k: 'command', name: 'place', x: 350, y: 250 });
+    for (const dt of dtSequence(400)) {
+      sim.step(dt);
+      if (sim.state.standingOn !== null) break;
+    }
+    expect(sim.state.standingOn).toBe('winFloor');
+    const before = sim.state.x;
+
+    // Window dragged 120px right and 40px up. Same id — it is the same window.
+    const moved: World = {
+      ...boxed(false),
+      rev: 2,
+      platforms: [
+        { id: 'floor', x0: 0, x1: 800, y: 400, kind: 'floor', passthrough: false },
+        { id: 'winFloor', x0: 320, x1: 620, y: 260, kind: 'ledge', passthrough: true, ownerX: 320 },
+      ],
+    };
+    sim.dispatch({ k: 'world', world: moved });
+
+    // Carried along, not left behind to slide off the end.
+    expect(sim.state.standingOn).toBe('winFloor');
+    expect(sim.state.x).toBeCloseTo(before + 120, 5);
+    expect(sim.state.y).toBe(260);
+  });
+
+  it('rides a window it is hanging under', () => {
+    const world = boxed(false);
+    const sim = createSim({ pack: testPack(), world, seed: 209 });
+    sim.dispatch({ k: 'command', name: 'place', x: 350, y: 130 });
+    expect(sim.state.hangingOn).toBe('winTop');
+    const before = sim.state.x;
+
+    const moved: World = {
+      ...boxed(false),
+      rev: 2,
+      ceilings: [{ id: 'winTop', x0: 120, x1: 420, y: 150, ownerX: 120 }],
+    };
+    sim.dispatch({ k: 'world', world: moved });
+
+    expect(sim.state.hangingOn).toBe('winTop');
+    expect(sim.state.x).toBeCloseTo(before - 80, 5);
+    expect(sim.state.y).toBe(150);
+  });
+
+  it('does not slide when a neighbour merely covers part of the surface', () => {
+    // The span shrank but the window did not move: ownerX is unchanged, so the
+    // pet must stay exactly where it is. Reading x0 instead would drag it.
+    const world = boxed(false);
+    const sim = createSim({ pack: testPack(), world, seed: 211 });
+    sim.dispatch({ k: 'command', name: 'place', x: 350, y: 250 });
+    for (const dt of dtSequence(400)) {
+      sim.step(dt);
+      if (sim.state.standingOn !== null) break;
+    }
+    const before = sim.state.x;
+
+    sim.dispatch({
+      k: 'world',
+      world: {
+        ...boxed(false),
+        rev: 2,
+        platforms: [
+          { id: 'floor', x0: 0, x1: 800, y: 400, kind: 'floor', passthrough: false },
+          { id: 'winFloor', x0: 260, x1: 500, y: 300, kind: 'ledge', passthrough: true, ownerX: 200 },
+        ],
+      },
+    });
+    expect(sim.state.x).toBe(before);
   });
 
   it('cannot get out of a pinned one', () => {

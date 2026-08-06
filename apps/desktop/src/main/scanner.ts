@@ -164,6 +164,7 @@ export function createScanner(events: ScannerEvents): Scanner {
               y: br.y,
               kind: 'ledge',
               passthrough: true,
+              ownerX: tl.x,
             });
           }
         }
@@ -183,7 +184,7 @@ export function createScanner(events: ScannerEvents): Scanner {
           // always room below an edge, never necessarily any above it.
           // Skipped only where it would sit on the screen's own roof.
           if (tl.y > host.region.y + TOUCH) {
-            ceilings.push({ id: `wc${w.id}:${i}`, x0: span.a, x1: span.b, y: tl.y });
+            ceilings.push({ id: `wc${w.id}:${i}`, x0: span.a, x1: span.b, y: tl.y, ownerX: tl.x });
           }
           if (roomAbove && !fillsScreen) {
             platforms.push({
@@ -193,6 +194,7 @@ export function createScanner(events: ScannerEvents): Scanner {
               y: tl.y,
               kind: 'ledge',
               passthrough: true,
+              ownerX: tl.x,
             });
           }
         }

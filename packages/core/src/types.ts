@@ -33,6 +33,15 @@ export interface Platform {
   kind: 'floor' | 'ledge';
   /** Can the pet drop through it from above. */
   passthrough: boolean;
+  /**
+   * Left edge of the thing this surface belongs to — a window — if it belongs
+   * to anything. `y` alone is enough to ride a window being dragged *up*,
+   * because the surface is the window's edge; sideways there is nothing to
+   * follow, since `x0`/`x1` also move when a neighbouring window merely
+   * changes what it covers. This is the unclipped origin, so comparing it
+   * across two scans gives the window's actual travel.
+   */
+  ownerX?: number;
 }
 
 /**
@@ -51,6 +60,8 @@ export interface Ceiling {
   x0: number;
   x1: number;
   y: number;
+  /** As `Platform.ownerX` — lets a hanging pet ride a window being dragged. */
+  ownerX?: number;
 }
 
 /**

@@ -252,6 +252,8 @@ Where they come from:
 
 The pet reaches a ceiling by being dropped under one, or by climbing a wall whose top meets one — climb to the top of the screen and it carries on upside down across it.
 
+**Surfaces that belong to a window carry `ownerX`, and that is how the pet rides one being dragged.** Following `y` alone was enough while windows only moved up and down in tests: the surface *is* the window's edge, so its `y` is the window's `y`. Sideways there is nothing to follow, because `x0`/`x1` are the *visible* span and shift whenever a neighbouring window changes what it covers — carrying the pet by that would slide it across the screen when nothing moved. `ownerX` is the unclipped origin, so the difference between two scans is the window's actual travel. `reconcileWorld` applies it for both platforms and ceilings; walls need nothing, since a climbing pet is pinned to `w.x` already.
+
 **A window is a place, not just an edge.** Its *bottom* edge is a floor too, so a pet dropped into a floating window settles inside it rather than falling through to the taskbar. That floor's ends hang over open air, so the pet wanders out again in its own time — soft containment, consistent with every other ledge.
 
 **Terrarium mode shuts the pet in, and needs no sim support at all.** Right-click the pet → *Keep in this window* asks the scanner to emit walls down that one window's sides. Floor, two walls and a ceiling is a closed box, and a pet that cannot walk past a wall cannot leave one. The scanner owns the pin (`setTerrarium` / `terrarium()`) because it is the only thing that knows when the window has closed; main asks rather than keeping a copy, or the two drift apart the moment a window shuts. Carrying the pet out by hand clears it.

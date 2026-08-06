@@ -817,6 +817,24 @@ export function createSim(opts: SimOptions): Sim {
     }
   }
 
+  /**
+   * How far the window behind a surface moved sideways since the last world.
+   *
+   * Deliberately reads `ownerX` rather than `x0`: a surface's span is clipped
+   * by whatever is in front of it, so `x0` shifts when a *neighbouring* window
+   * changes what it covers, and using it would drag the pet sideways for no
+   * reason. Surfaces with no owner (screen edges) never move.
+   */
+  function ownerShift<T extends { id: string; ownerX?: number }>(
+    before: readonly T[],
+    now: T,
+  ): number {
+    if (now.ownerX === undefined) return 0;
+    const was = before.find((s) => s.id === now.id);
+    if (was?.ownerX === undefined) return 0;
+    return now.ownerX - was.ownerX;
+  }
+
   function reconcileWorld(next: World): void {
     const prev = world;
     world = next;
@@ -835,6 +853,7 @@ export function createSim(opts: SimOptions): Sim {
       // Ride the window it is hanging under; drop if that window has gone.
       const c = ceilingById(state.hangingOn);
       if (!c) return startFalling();
+      state.x += ownerShift(prev.ceilings, c);
       state.y = c.y;
       if (state.x < c.x0 || state.x > c.x1) startFalling();
       return;
@@ -843,6 +862,10 @@ export function createSim(opts: SimOptions): Sim {
     const standing = platformById(state.standingOn);
     if (standing) {
       // Ride it — the window this pet is sitting on may have been dragged.
+      // Vertically the surface *is* the window edge, so following `y` is
+      // enough; horizontally the pet has to be carried by however far the
+      // window itself travelled, or a sideways drag slides out from under it.
+      state.x += ownerShift(prev.platforms, standing);
       state.y = standing.y;
       if (state.x < standing.x0 || state.x > standing.x1) startFalling();
     } else if (state.standingOn === WORLD_FLOOR) {
