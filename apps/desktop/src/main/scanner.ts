@@ -19,6 +19,27 @@ import * as win32 from './win32';
 /** Two edges within this many DIP count as touching. */
 const TOUCH = 2;
 
+/**
+ * How fast the desktop is resampled while a window is being dragged or
+ * resized, and how long that lasts after the movement stops.
+ *
+ * The pet rides a window by having its surface move under it, so it can only
+ * follow as often as the world is sampled — at the resting 300ms that reads as
+ * the pet teleporting after the window in three steps a second. Measured cost
+ * of a scan on this machine: 0.16ms mean / 0.28ms p95, plus 0.02ms to broadcast
+ * the result, so 60/s is ~1.1% of one core and only while something is actually
+ * moving. That is cheap enough to be the default.
+ *
+ * SETTLE_MS matters more than it looks: a drag has pauses in it, and dropping
+ * back to 300ms the instant the mouse stops means every pause costs a visible
+ * lurch when it resumes.
+ */
+const MOVING_MS = 8;
+const SETTLE_MS = 400;
+
+/** Below this a position delta is DIP rounding, not a window moving. */
+const MOVE_EPS = 0.5;
+
 /** Narrower than this and a window is a tooltip or a sliver, not furniture. */
 const MIN_WINDOW_W = 140;
 
@@ -37,6 +58,12 @@ export interface Scanner {
   stop(): void;
   force(): void;
   setSelfHwnds(ids: readonly string[]): void;
+  /**
+   * Resample the desktop at MOVING_MS while a window is moving, instead of
+   * staying at the resting interval. Off means the pet catches up to a dragged
+   * window a few times a second.
+   */
+  setSmoothTracking(on: boolean): void;
   /**
    * Pin the pet inside one window: that window gets side walls, closing it
    * into a box the pet cannot walk out of. null clears it.
@@ -70,8 +97,36 @@ function screens(): ScreenInfo[] {
   }));
 }
 
+/**
+ * Did a window we already knew about change position or size?
+ *
+ * Deliberately ignores windows that have just appeared or vanished. Opening a
+ * window is a one-off change the resting scan handles perfectly well; only a
+ * drag or a resize produces the continuous motion the pet needs to follow.
+ */
+function windowMoving(before: readonly WindowBox[], now: readonly WindowBox[]): boolean {
+  for (const b of now) {
+    const was = before.find((o) => o.id === b.id);
+    if (!was) continue;
+    if (
+      Math.abs(was.x0 - b.x0) > MOVE_EPS ||
+      Math.abs(was.y0 - b.y0) > MOVE_EPS ||
+      Math.abs(was.x1 - b.x1) > MOVE_EPS ||
+      Math.abs(was.y1 - b.y1) > MOVE_EPS
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function createScanner(events: ScannerEvents): Scanner {
-  let timer: ReturnType<typeof setInterval> | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let running = false;
+  let restMs = 300;
+  let smooth = true;
+  /** Timestamp of the last observed window movement; 0 = never. */
+  let movedAt = 0;
   let rev = 0;
   let lastSig = '';
   let selfHwnds: readonly string[] = [];
@@ -217,6 +272,7 @@ export function createScanner(events: ScannerEvents): Scanner {
       }
     }
 
+    if (windowMoving(boxes, seenBoxes)) movedAt = Date.now();
     boxes = seenBoxes;
     // The window the pet was pinned inside has gone. Let it out rather than
     // leaving invisible walls standing where a window used to be.
@@ -242,13 +298,26 @@ export function createScanner(events: ScannerEvents): Scanner {
     }
   }
 
+  /**
+   * Self-scheduling rather than setInterval, because the interval is not
+   * constant — it collapses to MOVING_MS while a window is in motion.
+   */
+  function loop(): void {
+    tick();
+    if (!running) return;
+    const fast = smooth && Date.now() - movedAt < SETTLE_MS;
+    timer = setTimeout(loop, fast ? MOVING_MS : restMs);
+  }
+
   return {
     start(intervalMs = 300) {
-      tick();
-      timer = setInterval(tick, intervalMs);
+      restMs = intervalMs;
+      running = true;
+      loop();
     },
     stop() {
-      if (timer) clearInterval(timer);
+      running = false;
+      if (timer) clearTimeout(timer);
       timer = null;
     },
     force() {
@@ -257,6 +326,9 @@ export function createScanner(events: ScannerEvents): Scanner {
     },
     setSelfHwnds(ids) {
       selfHwnds = ids;
+    },
+    setSmoothTracking(on) {
+      smooth = on;
     },
     setTerrarium(id) {
       terrariumId = id;

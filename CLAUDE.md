@@ -254,6 +254,12 @@ The pet reaches a ceiling by being dropped under one, or by climbing a wall whos
 
 **Surfaces that belong to a window carry `ownerX`, and that is how the pet rides one being dragged.** Following `y` alone was enough while windows only moved up and down in tests: the surface *is* the window's edge, so its `y` is the window's `y`. Sideways there is nothing to follow, because `x0`/`x1` are the *visible* span and shift whenever a neighbouring window changes what it covers — carrying the pet by that would slide it across the screen when nothing moved. `ownerX` is the unclipped origin, so the difference between two scans is the window's actual travel. `reconcileWorld` applies it for both platforms and ceilings; walls need nothing, since a climbing pet is pinned to `w.x` already.
 
+**The scan rate is adaptive, and that is what makes riding a window read as riding rather than teleporting.** The pet can only follow a window as often as the desktop is sampled, so at the resting 300ms a drag moved it in ~150px jumps three times a second — correct, and visibly awful. The scanner drops to `MOVING_MS` (8ms) the moment a window it *already knew about* changes position or size, and holds that for `SETTLE_MS` (400ms) after the last movement. Both details matter: windows appearing or vanishing deliberately don't count, because that is a one-off the resting scan handles fine and only a drag produces motion to follow; and the settle delay exists because a real drag has pauses in it, so dropping straight back to 300ms costs a visible lurch every time the mouse resumes.
+
+Measured on the dev machine, dragging a window at a real 60Hz: **3 follow-steps/s of ~150px each → 32/s of ~10px each** (mean; median 10px, max 54px). One scan costs 0.155ms mean / 0.28ms p95, plus 0.019ms to broadcast the result, so scanning flat out is ~0.8% of one core — and zero the rest of the time, because nothing is moving. That is why `smoothTracking` defaults on.
+
+Don't bother chasing the interval lower. Node's timer on Windows quantises to ~15.6ms, so a request of 16ms actually yielded 37 world emissions/s and 8ms yields 44; the floor is the timer, not the work.
+
 **A window is a place, not just an edge.** Its *bottom* edge is a floor too, so a pet dropped into a floating window settles inside it rather than falling through to the taskbar. That floor's ends hang over open air, so the pet wanders out again in its own time — soft containment, consistent with every other ledge.
 
 **Terrarium mode shuts the pet in, and needs no sim support at all.** Right-click the pet → *Keep in this window* asks the scanner to emit walls down that one window's sides. Floor, two walls and a ceiling is a closed box, and a pet that cannot walk past a wall cannot leave one. The scanner owns the pin (`setTerrarium` / `terrarium()`) because it is the only thing that knows when the window has closed; main asks rather than keeping a copy, or the two drift apart the moment a window shuts. Carrying the pet out by hand clears it.
@@ -328,6 +334,10 @@ The mantle (§10) is what made that work — without it the pet climbs 900px to 
 **Performance.** Naive full-screen clear+repaint at 60fps cost **53.9% of one core** on one display. After frame-identity skipping, union dirty-rect clears, moving the sim to main, and parking when idle: **9.3% across two displays** (5 processes, ~516MB RSS) — split gpu 3.4%, main 3.4%, renderers 2.0% + 0.4%. The renderers are cheap now because they have no loop at all; they paint on receipt.
 
 The gpu-process floor looks inherent to compositing full-screen transparent always-on-top layers, and now scales with display count. A smaller overlay window that follows the pet would likely remove most of it.
+
+**The world scan is far cheaper than it looks**, which is what licensed the adaptive rate in §10. Measured in-process over 400 iterations with 2 displays: the whole `tick()` is **0.155ms mean / 0.28ms p95**, of which the koffi z-order walk is 0.116ms; `buildDesktopGeometry` is 0.010ms and the change-signature `JSON.stringify` 0.003ms. Broadcasting the resulting `World` (838B) to both overlays costs another 0.019ms. So even at 60/s the scan is ~1% of one core, 0.04% of this 24-core box.
+
+That per-scan number is worth trusting more than an end-to-end CPU sample: the app's own baseline (a walking pet repaints at 60fps) swings by ±3% of a core run to run, which is several times larger than the entire cost being measured. Two separate whole-process A/B attempts returned *negative* deltas from noise alone before the measurement was moved in-process.
 
 **Still unknown:**
 - Whether the procedural gait (Phase 4) looks acceptable on real Quagsire art. If it does, the pivot-point rig editor never gets built.

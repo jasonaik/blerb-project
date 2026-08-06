@@ -133,6 +133,7 @@ function applySettings(patch: Partial<Settings>): Settings {
     for (const { win } of overlays.values()) win.setContentProtection(effectiveProtection());
   }
   if ('launchAtLogin' in patch) app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin });
+  if ('smoothTracking' in patch) scanner?.setSmoothTracking(settings.smoothTracking);
 
   broadcast(CH.settingsChanged, settings);
   settingsWin?.webContents.send(CH.settingsChanged, settings);
@@ -149,6 +150,7 @@ function trayTemplate(): Electron.MenuItemConstructorOptions[] {
     { label: 'Invisible in screen capture', type: 'checkbox', checked: settings.captureProtection, click: (i) => applySettings({ captureProtection: i.checked }) },
     { label: 'Can climb walls', type: 'checkbox', checked: settings.climbing, click: (i) => applySettings({ climbing: i.checked }) },
     { label: 'Can hang upside down', type: 'checkbox', checked: settings.hanging, click: (i) => applySettings({ hanging: i.checked }) },
+    { label: 'Follow moving windows smoothly', type: 'checkbox', checked: settings.smoothTracking, click: (i) => applySettings({ smoothTracking: i.checked }) },
     { label: 'Debug overlay', type: 'checkbox', checked: settings.debugOverlay, click: (i) => applySettings({ debugOverlay: i.checked }) },
     { type: 'separator' },
     { label: 'Recenter pet', click: () => command({ name: 'recenter' }) },
@@ -398,6 +400,7 @@ void app.whenReady().then(() => {
   spawnOverlays();
   createTray();
   startCursorWatcher();
+  scanner.setSmoothTracking(settings.smoothTracking);
   scanner.start(300);
   pet.start();
 

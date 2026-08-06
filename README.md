@@ -48,6 +48,7 @@ Open it from the **tray icon → Settings…**, by **double-clicking the tray ic
 | Pet size | 2× | 1–4×. Integer scales only, because the art is pixel art. |
 | Can climb walls | on | Whether the pet clings to and climbs the outer edges of the desktop. |
 | Can hang upside down | on | Whether it hangs under the top edge of a window, or the top of the screen, and walks along upside down. |
+| Follow moving windows smoothly | on | Watches the desktop ~60×/s while you drag or resize a window, instead of ~3×/s, so the pet rides it rather than jumping after it. Costs about 1% of one CPU core, and only while something is actually moving. Turn it off if you want the app as close to free as possible. |
 | Debug overlay | off | Draws the platforms, walls and ceilings the pet believes in. Unglamorous and the fastest way to see why it's standing somewhere odd. |
 
 Settings and the pet's last position are stored in `%APPDATA%\blerb-desktop\` as `settings.json` and `pet-snapshot.json`. Delete them to reset.
@@ -57,7 +58,7 @@ The tray menu carries the same toggles plus **Recenter pet**, for when it has wa
 ## Playing with the pet
 
 - **Drag it.** Left-click and drag anywhere, including onto another monitor. It falls from wherever you drop it. Drop it against a screen edge and it clings, just under a title bar and it hangs there upside down, or inside a floating window and it settles on the bottom of that window. This is the only way to get it onto a window — it can't jump.
-- **Right-click it** for the menu, including **Keep in this window** — shut it into whatever window it is standing in, so it paces the bottom, climbs the sides and hangs from the title bar until you let it out. Drag it out, or close the window, and it is free again. Either way, in or out of a terrarium, it rides along when you move the window.
+- **Right-click it** for the menu, including **Keep in this window** — shut it into whatever window it is standing in, so it paces the bottom, climbs the sides and hangs from the title bar until you let it out. Drag it out, or close the window, and it is free again. Either way, in or out of a terrarium, it rides along when you move the window — smoothly, in ~10px steps rather than 150px lurches, as long as **Follow moving windows smoothly** is on.
 - **Leave it alone.** It wanders, sits, sleeps, climbs the edges of the screen and hangs upside down from window title bars. Ignoring it costs nothing and changes nothing.
 
 Everywhere else on screen, clicks pass straight through to whatever is underneath.

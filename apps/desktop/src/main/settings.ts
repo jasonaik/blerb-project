@@ -10,6 +10,7 @@ export const DEFAULTS: Settings = {
   launchAtLogin: false,
   climbing: true,
   hanging: true,
+  smoothTracking: true,
   petScale: 2,
   pack: 'blob',
 };

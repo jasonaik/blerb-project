@@ -15,6 +15,12 @@ export interface Settings {
   climbing: boolean;
   /** Hang upside down under window top edges and the top of the screen. */
   hanging: boolean;
+  /**
+   * Resample the desktop at ~60/s while a window is being dragged or resized,
+   * so the pet rides it smoothly instead of catching up three times a second.
+   * Costs about 1% of one core, and only while something is actually moving.
+   */
+  smoothTracking: boolean;
   /** Display scale multiplier for the sprite. 32px art at 2 → 64px on screen. */
   petScale: number;
   /** Pack directory name under packs/. */

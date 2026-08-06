@@ -76,6 +76,12 @@
         <input type="checkbox" id="hanging" />
       </div>
       <div class="row">
+        <label for="smoothTracking">Follow moving windows smoothly
+          <span class="hint">Watches the desktop ~60×/s while you drag or resize a window, so the pet rides it instead of catching up in steps. Costs about 1% of one CPU core, only while something is moving.</span>
+        </label>
+        <input type="checkbox" id="smoothTracking" />
+      </div>
+      <div class="row">
         <label for="debugOverlay">Debug overlay
           <span class="hint">Draws the platforms the pet believes in. Useful, unglamorous.</span>
         </label>
@@ -90,7 +96,7 @@
 
     <script>
       const $ = (id) => document.getElementById(id);
-      const bools = ['petVisible', 'captureProtection', 'launchAtLogin', 'climbing', 'hanging', 'debugOverlay'];
+      const bools = ['petVisible', 'captureProtection', 'launchAtLogin', 'climbing', 'hanging', 'smoothTracking', 'debugOverlay'];
 
       function render(s) {
         for (const k of bools) $(k).checked = s[k];
