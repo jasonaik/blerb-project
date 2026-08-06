@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, Menu, nativeImage, screen, Tray, type Disp
 import { readFile } from 'node:fs/promises';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
+import { frameBounds } from '@blerb/render-canvas';
 import { deriveFrame, type PetSnapshot, type PetState, type World } from '@blerb/core';
 import { CH, type OverlayCommand, type Settings } from '../shared/ipc';
 import { loadSettings, saveSettings } from './settings';
@@ -191,19 +192,33 @@ function openSettings(): void {
  * With N windows only the one under the pet may become interactive, and only
  * while the cursor is actually over the sprite.
  */
+/** Slack around the sprite for the click-through hit test, DIP. */
+const GRAB_PAD = 6;
+
 function startCursorWatcher(): void {
   setInterval(() => {
     if (dragLatch || !pet) return;
 
     const s = pet.sim.state;
-    const cell = pet.pack.cells.get(deriveFrame(pet.pack, s).cellId);
+    const frame = deriveFrame(pet.pack, s);
+    const cell = pet.pack.cells.get(frame.cellId);
     if (!cell || s.hidden) return setInteractive(null);
 
-    const scale = settings.petScale;
+    // Through the SAME transform the renderer draws with. The sprite is
+    // rotated a quarter turn on a wall and a half turn under a ceiling, so a
+    // box derived from the cell alone sits in the wrong place entirely — which
+    // is why a hanging pet was almost impossible to pick up.
+    const b = frameBounds(
+      cell,
+      { ...frame, scale: frame.scale * settings.petScale },
+      pet.pack.atlasScale,
+    );
+    // A little slack, because the target is a moving 32px sprite and the user
+    // is aiming with a mouse.
+    const pad = GRAB_PAD;
     const p = screen.getCursorScreenPoint(); // global DIP
-    const bx = s.x - cell.anchor[0] * scale;
-    const by = s.y - cell.anchor[1] * scale;
-    const over = p.x >= bx && p.x <= bx + cell.w * scale && p.y >= by && p.y <= by + cell.h * scale;
+    const over =
+      p.x >= b.x - pad && p.x <= b.x + b.w + pad && p.y >= b.y - pad && p.y <= b.y + b.h + pad;
 
     if (!over) return setInteractive(null);
     const hit = [...overlays.values()].find(

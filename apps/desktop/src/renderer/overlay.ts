@@ -1,6 +1,6 @@
 import { loadPack, type Fetcher, type ResolvedPack } from '@blerb/pack';
 import { deriveFrame, type PetState, type RenderFrame, type World } from '@blerb/core';
-import { CanvasRenderer, type Ctx2D } from '@blerb/render-canvas';
+import { CanvasRenderer, frameBounds, type Ctx2D } from '@blerb/render-canvas';
 
 /**
  * One overlay window's view of the pet.
@@ -77,10 +77,10 @@ async function main(): Promise<void> {
   function spriteRect(f: RenderFrame): Rect | null {
     const cell = pack.cells.get(f.cellId);
     if (!cell) return null;
-    // A rotated sprite's footprint is not its cell box, so pad generously and
-    // use the larger dimension both ways rather than doing the trig.
-    const s = Math.max(cell.w, cell.h) * f.scale;
-    return { x: f.x - s / 2 - PAD, y: f.y - s - PAD, w: s + PAD * 2, h: s * 2 + PAD * 2 };
+    // Exact footprint through the same transform the renderer uses, plus a
+    // pixel or two for the pixel-art snap.
+    const b = frameBounds(cell, f, pack.atlasScale);
+    return { x: b.x - PAD, y: b.y - PAD, w: b.w + PAD * 2, h: b.h + PAD * 2 };
   }
 
   function union(a: Rect, b: Rect): Rect {

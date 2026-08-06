@@ -1,5 +1,5 @@
-import type { ResolvedPack } from '@blerb/pack';
-import type { RenderFrame, World } from '@blerb/core';
+import type { ResolvedCell, ResolvedPack } from '@blerb/pack';
+import type { Rect, RenderFrame, World } from '@blerb/core';
 
 /**
  * The only render sink in the project.
@@ -50,6 +50,49 @@ export interface Ctx2D {
   fillStyle: string;
   lineWidth: number;
   font: string;
+}
+
+/**
+ * The axis-aligned box a frame actually covers on screen, in the same space as
+ * `f.x`/`f.y`.
+ *
+ * Must be derived from the transform, not from the cell box: the sprite is
+ * rotated a quarter turn on a wall and a half turn under a ceiling, so the
+ * footprint moves to the side of, or below, the anchor. Assuming it always
+ * sits above the anchor is what made a hanging pet nearly impossible to click —
+ * the interactive region was a sprite's height above where the pet was drawn.
+ *
+ * `atlasScale` must match the pack's, since `draw` divides by it.
+ */
+export function frameBounds(cell: ResolvedCell, f: RenderFrame, atlasScale = 1): Rect {
+  const inv = 1 / atlasScale;
+  const sx = f.facing * f.scale * f.squash.sx * inv;
+  const sy = f.scale * f.squash.sy * inv;
+  const cos = Math.cos(f.rotation);
+  const sin = Math.sin(f.rotation);
+
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+
+  // Four corners of the cell, through translate -> rotate -> scale.
+  for (const [u, v] of [
+    [0, 0],
+    [cell.w, 0],
+    [0, cell.h],
+    [cell.w, cell.h],
+  ] as const) {
+    const lx = sx * (u - cell.anchor[0]);
+    const ly = sy * (v - cell.anchor[1]);
+    const wx = f.x + lx * cos - ly * sin;
+    const wy = f.y + lx * sin + ly * cos;
+    x0 = Math.min(x0, wx);
+    y0 = Math.min(y0, wy);
+    x1 = Math.max(x1, wx);
+    y1 = Math.max(y1, wy);
+  }
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
 
 export interface CanvasRendererOptions {
