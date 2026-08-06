@@ -56,8 +56,8 @@ The tray menu carries the same toggles plus **Recenter pet**, for when it has wa
 
 ## Playing with the pet
 
-- **Drag it.** Left-click and drag anywhere, including onto another monitor. It falls from wherever you drop it. Drop it against a screen edge and it clings; drop it just under a window's title bar and it hangs there upside down. This is the only way to get it onto a window — it can't jump.
-- **Right-click it** for the menu.
+- **Drag it.** Left-click and drag anywhere, including onto another monitor. It falls from wherever you drop it. Drop it against a screen edge and it clings, just under a title bar and it hangs there upside down, or inside a floating window and it settles on the bottom of that window. This is the only way to get it onto a window — it can't jump.
+- **Right-click it** for the menu, including **Keep in this window** — shut it into whatever window it is standing in, so it paces the bottom, climbs the sides and hangs from the title bar until you let it out. Drag it out, or close the window, and it is free again.
 - **Leave it alone.** It wanders, sits, sleeps, climbs the edges of the screen and hangs upside down from window title bars. Ignoring it costs nothing and changes nothing.
 
 Everywhere else on screen, clicks pass straight through to whatever is underneath.

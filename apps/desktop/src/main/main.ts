@@ -160,6 +160,36 @@ function trayTemplate(): Electron.MenuItemConstructorOptions[] {
 
 const rebuildTrayMenu = () => tray?.setContextMenu(Menu.buildFromTemplate(trayTemplate()));
 
+/**
+ * The pet's own right-click menu: everything the tray has, plus the one action
+ * that only makes sense with a pet in front of you — shutting it into the
+ * window it is currently standing in.
+ */
+function petMenuTemplate(): Electron.MenuItemConstructorOptions[] {
+  const s = pet?.sim.state;
+  const here = s && scanner ? scanner.windowAt(s.x, s.y) : null;
+  // The scanner owns the pin so it can drop it when the window closes; asking
+  // it is the only way to be sure the two agree.
+  const pinned = scanner?.terrarium() != null;
+
+  return [
+    {
+      label: pinned ? 'Let out of this window' : 'Keep in this window',
+      // Only offered when the pet is actually inside something to be kept in.
+      enabled: pinned || here !== null,
+      click: () => setTerrarium(pinned ? null : here),
+    },
+    { type: 'separator' },
+    ...trayTemplate(),
+  ];
+}
+
+function setTerrarium(id: string | null): void {
+  scanner?.setTerrarium(id);
+  scanner?.force();
+  pet?.wake();
+}
+
 function createTray(): void {
   const icon = nativeImage
     .createFromPath(join(packsRoot, settings.pack, 'atlas.png'))
@@ -288,11 +318,17 @@ function registerIpc(): void {
   });
 
   ipcMain.on(CH.overlayPlace, (_e, pt: { x: number; y: number }) => {
+    // Carrying the pet out of the window it was shut into means letting it
+    // out. Leaving the pin would strand invisible walls across a window the
+    // pet is no longer in.
+    const pinned = scanner?.terrarium();
+    if (pinned && scanner?.windowAt(pt.x, pt.y) !== pinned) setTerrarium(null);
+
     pet?.sim.dispatch({ k: 'command', name: 'place', x: pt.x, y: pt.y });
     pet?.wake();
   });
 
-  ipcMain.on(CH.overlayMenu, () => Menu.buildFromTemplate(trayTemplate()).popup());
+  ipcMain.on(CH.overlayMenu, () => Menu.buildFromTemplate(petMenuTemplate()).popup());
   ipcMain.handle(CH.settingsGet, () => settings);
   ipcMain.handle(CH.settingsSet, (_e, patch: Partial<Settings>) => applySettings(patch));
   ipcMain.on(CH.appQuit, quit);

@@ -713,7 +713,11 @@ export function createSim(opts: SimOptions): Sim {
       }
       // The edge of a window's title bar. Mostly turn back; sometimes drop.
       if (pack.behavior.can.fall && chance(state, 0.15)) {
-        state.x = nextX;
+        // Let go AT the end, not past it. A pet shut inside a window is
+        // enclosed by walls that start where the ceiling stops, and a drop a
+        // pixel beyond the end would fall straight through the gap.
+        state.x = Math.min(Math.max(nextX, c.x0), c.x1);
+        state.vx = 0;
         startFalling();
         return;
       }

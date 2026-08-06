@@ -37,6 +37,23 @@ export interface Scanner {
   stop(): void;
   force(): void;
   setSelfHwnds(ids: readonly string[]): void;
+  /**
+   * Pin the pet inside one window: that window gets side walls, closing it
+   * into a box the pet cannot walk out of. null clears it.
+   */
+  setTerrarium(id: string | null): void;
+  /** The pinned window, or null. The scanner owns this; it clears it when the window goes. */
+  terrarium(): string | null;
+  /** Topmost window whose box contains a point, or null. Global DIP. */
+  windowAt(x: number, y: number): string | null;
+}
+
+interface WindowBox {
+  id: string;
+  x0: number;
+  x1: number;
+  y0: number;
+  y1: number;
 }
 
 export interface ScannerEvents {
@@ -58,8 +75,11 @@ export function createScanner(events: ScannerEvents): Scanner {
   let rev = 0;
   let lastSig = '';
   let selfHwnds: readonly string[] = [];
+  let terrariumId: string | null = null;
+  let boxes: WindowBox[] = []; // z-order, topmost first
 
   function tick(): void {
+    const seenBoxes: WindowBox[] = [];
     const list = screens();
     const regions = list.map((s) => s.region);
     const bounds = unionRect(regions);
@@ -72,7 +92,16 @@ export function createScanner(events: ScannerEvents): Scanner {
       // current one and hides the part of it they overlap. Without this the
       // pet stands on, and hangs from, the edges of windows buried behind
       // whatever you are actually looking at — a line that isn't on screen.
-      const above: { x0: number; x1: number; y0: number; y1: number }[] = [];
+      const above: WindowBox[] = [];
+
+      /** The stretches of a horizontal edge at `y` that nothing above covers. */
+      const visibleAt = (y: number, a: number, b: number) =>
+        subtractSpans(
+          { a, b },
+          above
+            .filter((o) => o.y0 <= y + TOUCH && o.y1 >= y - TOUCH)
+            .map((o) => ({ a: o.x0, b: o.x1 })),
+        );
 
       for (const w of win32.scanWindows()) {
         if (selfHwnds.includes(w.id)) continue; // our overlays are transparent
@@ -82,10 +111,15 @@ export function createScanner(events: ScannerEvents): Scanner {
         const wDip = br.x - tl.x;
         const hDip = br.y - tl.y;
 
-        // Record it as an occluder before any of the "is it useful" filters —
-        // a window too narrow to carry a pet still covers what is behind it.
-        const occluders = above.slice();
-        above.push({ x0: tl.x, x1: br.x, y0: tl.y, y1: br.y });
+        // Occlusion has to be evaluated against everything above BEFORE this
+        // window is added to the list, and this window has to be added even if
+        // it is then filtered out — a window too narrow to carry a pet still
+        // covers what is behind it.
+        const box: WindowBox = { id: w.id, x0: tl.x, x1: br.x, y0: tl.y, y1: br.y };
+        const topSpans = visibleAt(tl.y, Math.max(tl.x, 0), br.x);
+        const bottomSpans = visibleAt(br.y, tl.x, br.x);
+        above.push(box);
+        seenBoxes.push(box);
 
         if (wDip < MIN_WINDOW_W) continue;
 
@@ -101,19 +135,11 @@ export function createScanner(events: ScannerEvents): Scanner {
         );
         if (!host) continue;
 
-        // Only the stretches of this window's top edge that something above
-        // isn't covering. A window whose title bar is entirely hidden offers
-        // nothing at all, which is the point.
-        const hidden = occluders
-          .filter((o) => o.y0 <= tl.y + TOUCH && o.y1 >= tl.y - TOUCH)
-          .map((o) => ({ a: o.x0, b: o.x1 }));
-        const visible = subtractSpans(
-          {
-            a: Math.max(tl.x, host.region.x),
-            b: Math.min(br.x, host.region.x + host.region.w),
-          },
-          hidden,
-        );
+        const clip = (s: { a: number; b: number }) => ({
+          a: Math.max(s.a, host.region.x),
+          b: Math.min(s.b, host.region.x + host.region.w),
+        });
+        const visible = topSpans.map(clip).filter((s) => s.b - s.a > 4);
 
         // A ledge on top needs room ABOVE for the pet to be visible standing
         // there, which a maximized window simply does not have — its top edge
@@ -121,6 +147,35 @@ export function createScanner(events: ScannerEvents): Scanner {
         // for the ceiling, not a duplicate of it.
         const roomAbove = tl.y > host.region.y + MIN_LEDGE_Y;
         const fillsScreen = wDip >= host.region.w * 0.96 && hDip >= host.region.h * 0.96;
+
+        // The INSIDE of the window's bottom edge: this is what makes a window
+        // somewhere the pet can be, rather than just an edge it perches on.
+        // Drop it into a floating window and it settles here. Its ends hang
+        // over open air, so the pet can still wander out — soft containment.
+        // `terrarium` closes those ends off with walls.
+        const insideRoom = hDip > MIN_LEDGE_Y && br.y < host.floorY - TOUCH;
+        if (insideRoom) {
+          for (const [i, span] of bottomSpans.map(clip).entries()) {
+            if (span.b - span.a <= 4) continue;
+            platforms.push({
+              id: `wf${w.id}:${i}`,
+              x0: span.a,
+              x1: span.b,
+              y: br.y,
+              kind: 'ledge',
+              passthrough: true,
+            });
+          }
+        }
+
+        if (terrariumId === w.id && insideRoom) {
+          // Close the box. The sim needs no notion of "inside a window" — a
+          // pet surrounded by walls, floor and ceiling simply cannot leave.
+          walls.push(
+            { id: `wt${w.id}:l`, x: tl.x, y0: tl.y, y1: br.y, side: 1 },
+            { id: `wt${w.id}:r`, x: br.x, y0: tl.y, y1: br.y, side: -1 },
+          );
+        }
 
         for (const [i, span] of visible.entries()) {
           // A ceiling under EVERY window's top edge, maximized ones included.
@@ -160,6 +215,11 @@ export function createScanner(events: ScannerEvents): Scanner {
       }
     }
 
+    boxes = seenBoxes;
+    // The window the pet was pinned inside has gone. Let it out rather than
+    // leaving invisible walls standing where a window used to be.
+    if (terrariumId !== null && !boxes.some((b) => b.id === terrariumId)) terrariumId = null;
+
     platforms.sort((a, z) => a.y - z.y);
     events.onFullscreen(fullscreen);
 
@@ -170,7 +230,7 @@ export function createScanner(events: ScannerEvents): Scanner {
       if (process.env.BLERB_DEBUG) {
         console.log(
           `[scan] rev=${rev} koffi=${win32.available} screens=${list.length} ` +
-            `fullscreen=${fullscreen} platforms=${platforms.length} walls=${walls.length} ceilings=${ceilings.length}`,
+            `terrarium=${terrariumId ?? '-'} platforms=${platforms.length} walls=${walls.length} ceilings=${ceilings.length}`,
         );
         for (const p of platforms) console.log(`   floor ${p.id} y=${Math.round(p.y)} x=${Math.round(p.x0)}..${Math.round(p.x1)}`);
         for (const c of ceilings) console.log(`   roof  ${c.id} y=${Math.round(c.y)} x=${Math.round(c.x0)}..${Math.round(c.x1)}`);
@@ -195,6 +255,17 @@ export function createScanner(events: ScannerEvents): Scanner {
     },
     setSelfHwnds(ids) {
       selfHwnds = ids;
+    },
+    setTerrarium(id) {
+      terrariumId = id;
+    },
+    terrarium() {
+      return terrariumId;
+    },
+    windowAt(x, y) {
+      // boxes is z-order, topmost first, so the first hit is the visible one.
+      const hit = boxes.find((b) => x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1);
+      return hit?.id ?? null;
     },
   };
 }

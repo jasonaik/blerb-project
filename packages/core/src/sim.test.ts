@@ -487,6 +487,83 @@ describe('climbing', () => {
   });
 });
 
+describe('windows as places', () => {
+  /**
+   * What the scanner emits for a floating window the pet has been shut into:
+   * a floor along its bottom edge, a ceiling under its top edge, and — only
+   * because it is pinned — walls down both sides. The sim has no notion of
+   * "inside a window"; a pet surrounded on all four sides simply cannot leave.
+   */
+  const boxed = (walled: boolean): World => ({
+    rev: 1,
+    bounds: { x: 0, y: 0, w: 800, h: 400 },
+    regions: [{ x: 0, y: 0, w: 800, h: 400 }],
+    platforms: [
+      { id: 'floor', x0: 0, x1: 800, y: 400, kind: 'floor', passthrough: false },
+      { id: 'winFloor', x0: 200, x1: 500, y: 300, kind: 'ledge', passthrough: true },
+    ],
+    walls: walled
+      ? [
+          { id: 'winL', x: 200, y0: 120, y1: 300, side: 1 },
+          { id: 'winR', x: 500, y0: 120, y1: 300, side: -1 },
+        ]
+      : [],
+    ceilings: [{ id: 'winTop', x0: 200, x1: 500, y: 120 }],
+    gravity: 900,
+    reducedMotion: false,
+  });
+
+  it('settles inside a window it is dropped into', () => {
+    const sim = createSim({ pack: testPack(), world: boxed(false), seed: 201 });
+    sim.dispatch({ k: 'command', name: 'place', x: 350, y: 250 });
+    for (const dt of dtSequence(400)) {
+      sim.step(dt);
+      if (sim.state.standingOn !== null) break;
+    }
+    // The bottom of the window, not the desktop underneath it.
+    expect(sim.state.standingOn).toBe('winFloor');
+    expect(sim.state.y).toBe(300);
+  });
+
+  it('wanders back out of an unpinned window eventually', () => {
+    const sim = createSim({ pack: testPack({ climbiness: 0 }), world: boxed(false), seed: 203 });
+    sim.dispatch({ k: 'command', name: 'place', x: 350, y: 250 });
+
+    let out = false;
+    for (const dt of dtSequence(120_000)) {
+      sim.step(dt);
+      if (sim.state.standingOn === 'floor') {
+        out = true;
+        break;
+      }
+    }
+    expect(out).toBe(true);
+  });
+
+  it('cannot get out of a pinned one', () => {
+    // climbiness 1 so it tries the walls too, not just the floor.
+    const world = boxed(true);
+    const sim = createSim({ pack: testPack({ climbiness: 1 }), world, seed: 205 });
+    sim.dispatch({ k: 'command', name: 'place', x: 350, y: 250 });
+
+    const seen = new Set<string>();
+    for (const dt of dtSequence(200_000)) {
+      sim.step(dt);
+      seen.add(sim.state.behavior);
+      expect(sim.state.x).toBeGreaterThanOrEqual(200 - EPS);
+      expect(sim.state.x).toBeLessThanOrEqual(500 + EPS);
+      expect(sim.state.y).toBeGreaterThanOrEqual(120 - EPS);
+      expect(sim.state.y).toBeLessThanOrEqual(300 + EPS);
+      expect(sim.state.standingOn).not.toBe('floor');
+    }
+    // And it's living in there, not stuck in a corner: it paces the bottom,
+    // climbs the sides and hangs from the top.
+    expect(seen.has('walk')).toBe(true);
+    expect(seen.has('climb')).toBe(true);
+    expect(seen.has('hang')).toBe(true);
+  });
+});
+
 describe('multi-display', () => {
   /**
    * A grounded pet must be on the ground it claims to be on.

@@ -252,6 +252,12 @@ Where they come from:
 
 The pet reaches a ceiling by being dropped under one, or by climbing a wall whose top meets one — climb to the top of the screen and it carries on upside down across it.
 
+**A window is a place, not just an edge.** Its *bottom* edge is a floor too, so a pet dropped into a floating window settles inside it rather than falling through to the taskbar. That floor's ends hang over open air, so the pet wanders out again in its own time — soft containment, consistent with every other ledge.
+
+**Terrarium mode shuts the pet in, and needs no sim support at all.** Right-click the pet → *Keep in this window* asks the scanner to emit walls down that one window's sides. Floor, two walls and a ceiling is a closed box, and a pet that cannot walk past a wall cannot leave one. The scanner owns the pin (`setTerrarium` / `terrarium()`) because it is the only thing that knows when the window has closed; main asks rather than keeping a copy, or the two drift apart the moment a window shuts. Carrying the pet out by hand clears it.
+
+One escape route had to be closed for that to hold: letting go at the **end** of a ceiling used to drop the pet a pixel *past* the end, which is exactly where the wall stops — it fell straight through the corner. `stepHang` now releases at the end, not beyond it.
+
 **`facing` means the direction of travel in world space, and the sprite mirror is derived in `deriveFrame` — never stored.** A half-turn flips the sprite's x axis, so a pet travelling right while hanging needs the *opposite* mirror to one travelling right on the ground. Storing the mirror and calling it `facing` is what produced the upside-down climb on left-hand walls; the same trap, one rotation further round.
 
 **The click-through hit box must come from the render transform, not from the cell.** `frameBounds` in `@blerb/render-canvas` walks the cell's four corners through translate → rotate → scale — the same order `draw` uses, `atlasScale` included. Deriving the box from `cell.anchor` alone assumes the sprite sits above its anchor, which is only true upright: a hanging pet's box landed a whole sprite-height *above* where it was drawn, so the pet could not be picked up, and a climbing one's sat off to the side. The renderer's dirty rect calls the same function, so the two cannot drift apart.
