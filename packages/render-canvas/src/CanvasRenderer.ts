@@ -168,6 +168,14 @@ export class CanvasRenderer {
       ctx.stroke();
     }
 
+    ctx.strokeStyle = 'rgba(255, 200, 90, 0.55)';
+    for (const c of world.ceilings) {
+      ctx.beginPath();
+      ctx.moveTo(c.x0, c.y - 0.5);
+      ctx.lineTo(c.x1, c.y - 0.5);
+      ctx.stroke();
+    }
+
     ctx.strokeStyle = 'rgba(255, 90, 140, 0.9)';
     ctx.beginPath();
     ctx.arc(f.x, f.y, 3, 0, Math.PI * 2);

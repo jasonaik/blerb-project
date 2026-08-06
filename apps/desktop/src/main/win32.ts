@@ -23,9 +23,7 @@ export interface NativeWindowRect {
 }
 
 const GW_HWNDNEXT = 2;
-const GWL_STYLE = -16;
 const GWL_EXSTYLE = -20;
-const WS_MAXIMIZE = 0x0100_0000;
 const WS_EX_TOOLWINDOW = 0x0000_0080;
 const DWMWA_CLOAKED = 14;
 const DWMWA_EXTENDED_FRAME_BOUNDS = 9;
@@ -99,9 +97,15 @@ function isCloaked(hwnd: unknown): boolean {
 
 /**
  * Top-level windows in z-order (topmost first) that could plausibly carry a
- * pet: visible, titled, not minimized, not maximized (Shimeji's rule — a
- * maximized window's top edge is the screen edge, not a ledge), not a tool
- * window (which also conveniently excludes our own overlay), not cloaked.
+ * pet: visible, titled, not minimized, not a tool window (which also
+ * conveniently excludes our own overlay), not cloaked.
+ *
+ * Maximized windows are INCLUDED. Shimeji drops them because a maximized
+ * window's top edge is the screen edge, with no room above it to stand — true,
+ * and the scanner still refuses to put a ledge there. But there is always room
+ * to hang *underneath* an edge, so a maximized window's title bar is a perfectly
+ * good ceiling. Excluding them here would make the pet unable to use the window
+ * you spend all day in.
  */
 export function scanWindows(take = 10, walkLimit = 120): NativeWindowRect[] {
   if (!api) return [];
@@ -117,9 +121,8 @@ export function scanWindows(take = 10, walkLimit = 120): NativeWindowRect[] {
       !api.IsIconic(hwnd) &&
       api.GetWindowTextLengthW(hwnd) > 0
     ) {
-      const style = api.GetWindowLongW(hwnd, GWL_STYLE);
       const ex = api.GetWindowLongW(hwnd, GWL_EXSTYLE);
-      if ((style & WS_MAXIMIZE) === 0 && (ex & WS_EX_TOOLWINDOW) === 0 && !isCloaked(hwnd)) {
+      if ((ex & WS_EX_TOOLWINDOW) === 0 && !isCloaked(hwnd)) {
         const r = extendedBounds(hwnd);
         if (r && r.right - r.left >= 160 && r.bottom - r.top >= 80) out.push(r);
       }

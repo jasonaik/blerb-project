@@ -36,6 +36,24 @@ export interface Platform {
 }
 
 /**
+ * An UNDERSIDE the pet can hang from, walking upside down.
+ *
+ * Deliberately a separate list rather than a flag on `Platform`. Half a dozen
+ * places ask "what is under the pet" — where it lands, what it settles onto,
+ * what it can mantle to — and every one of them would need to remember to
+ * exclude ceilings. Forgetting one gives you a pet that falls upwards.
+ *
+ * `y` is the surface itself; the pet's anchor sits exactly on it and its body
+ * hangs below, which is the mirror of how it stands on a Platform.
+ */
+export interface Ceiling {
+  id: string;
+  x0: number;
+  x1: number;
+  y: number;
+}
+
+/**
  * A vertical surface the pet can cling to and climb.
  *
  * Only exists where there is nothing to walk onto — the outer edge of the
@@ -82,6 +100,8 @@ export interface World {
   platforms: Platform[];
   /** Climbable vertical surfaces. Empty is fine; the pet just turns around. */
   walls: Wall[];
+  /** Undersides the pet can hang from. Empty is fine; it just never hangs. */
+  ceilings: Ceiling[];
   gravity: number;
   reducedMotion: boolean;
 }
@@ -99,7 +119,9 @@ export type BehaviorId =
   /** Moving along a wall, up or down. */
   | 'climb'
   /** Attached to a wall but stationary — deciding, or resting. */
-  | 'cling';
+  | 'cling'
+  /** Upside down on the underside of something, walking along it. */
+  | 'hang';
 
 export type PetEvent =
   | { k: 'world'; world: World }
@@ -130,6 +152,11 @@ export interface PetState {
   climbSide: -1 | 1;
   /** Vertical direction while climbing: -1 up, +1 down. */
   climbDir: -1 | 1;
+  /**
+   * Ceiling.id while hanging upside down, else null. Mutually exclusive with
+   * both standingOn and climbingOn.
+   */
+  hangingOn: string | null;
 
   behavior: BehaviorId;
   /** ms spent in the current behavior. */

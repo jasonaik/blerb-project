@@ -147,6 +147,7 @@ function trayTemplate(): Electron.MenuItemConstructorOptions[] {
     { label: 'Pet visible', type: 'checkbox', checked: settings.petVisible, click: (i) => applySettings({ petVisible: i.checked }) },
     { label: 'Invisible in screen capture', type: 'checkbox', checked: settings.captureProtection, click: (i) => applySettings({ captureProtection: i.checked }) },
     { label: 'Can climb walls', type: 'checkbox', checked: settings.climbing, click: (i) => applySettings({ climbing: i.checked }) },
+    { label: 'Can hang upside down', type: 'checkbox', checked: settings.hanging, click: (i) => applySettings({ hanging: i.checked }) },
     { label: 'Debug overlay', type: 'checkbox', checked: settings.debugOverlay, click: (i) => applySettings({ debugOverlay: i.checked }) },
     { type: 'separator' },
     { label: 'Recenter pet', click: () => command({ name: 'recenter' }) },
@@ -300,6 +301,7 @@ void app.whenReady().then(() => {
   const pack = loadPackSync(packDir);
   // The pack ships with climbing on; the setting is the user's override.
   pack.behavior.can.climb = settings.climbing;
+  pack.behavior.can.hang = settings.hanging;
   // Diagnostic: climb at every wall instead of ~45% of the time, so the
   // multi-monitor path can be exercised without waiting on dice.
   if (process.env.BLERB_CLIMBY) pack.behavior.climbiness = 1;
@@ -334,7 +336,7 @@ void app.whenReady().then(() => {
           s.y >= o.display.bounds.y &&
           s.y < o.display.bounds.y + o.display.bounds.height,
       );
-      const line = `${s.behavior} on=${s.standingOn ?? s.climbingOn ?? 'air'} screen=${where?.display.id ?? '?'}`;
+      const line = `${s.behavior} on=${s.standingOn ?? s.climbingOn ?? s.hangingOn ?? 'air'} screen=${where?.display.id ?? '?'}`;
       if (line !== prev) {
         prev = line;
         console.log(`[pet] ${line} @ ${Math.round(s.x)},${Math.round(s.y)}`);

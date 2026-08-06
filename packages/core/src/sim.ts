@@ -3,6 +3,7 @@ import { chance, rand, randRange, seedFrom, weightedPick } from './rng.js';
 import { EPS, regionAt } from './geom.js';
 import type {
   BehaviorId,
+  Ceiling,
   PetEvent,
   PetSnapshot,
   PetState,
@@ -37,10 +38,15 @@ const MAX_STEP_MS = 250;
 const MOTION_BUDGET = 0.3;
 
 /**
- * How near a wall a hand-placed pet has to land to grab it, in world px.
- * Also the minimum drop below the cursor before a wall beats the ground.
+ * How near a wall or ceiling a hand-placed pet has to land to grab it, in
+ * world px. Also the minimum drop below the cursor before a surface beats the
+ * ground. Generous on purpose: placing a pet on a 1px line with a mouse is not
+ * a game anyone wants to play.
  */
-const WALL_GRAB = 24;
+const SURFACE_GRAB = 24;
+
+/** Hanging is slower than walking — it should read as effort. */
+const HANG_SPEED = 0.7;
 
 /**
  * Chance per behaviour decision of slipping through a seam to the screen
@@ -61,6 +67,7 @@ const BEHAVIOR_DURATION_MS: Record<BehaviorId, readonly [number, number]> = {
   stretch: [1200, 2000],
   climb: [1500, 5000],
   cling: [800, 2600],
+  hang: [1200, 5000],
   // Transient states; duration is decided by physics, not the picker.
   fall: [0, 0],
   land: [180, 180],
@@ -108,21 +115,36 @@ export function deriveFrame(pack: ResolvedPack, s: PetState): RenderFrame {
   // Phase-lock the walk cycle to distance travelled, not wall time, so the
   // feet don't skate when speed changes.
   const phaseMs =
-    (s.behavior === 'walk' || s.behavior === 'climb') && anim.designSpeed
+    (s.behavior === 'walk' || s.behavior === 'climb' || s.behavior === 'hang') &&
+    anim.designSpeed
       ? (s.odometer / anim.designSpeed) * 1000
       : s.animT;
 
-  // On a wall the sprite rotates so its feet meet the surface. `side` is the
-  // direction from wall to pet, so +1 (wall on the pet's left) rotates "down"
-  // into "left".
-  const rotation = s.climbingOn !== null ? (s.climbSide * Math.PI) / 2 : 0;
+  // The sprite rotates so its feet meet whatever it is attached to. On a wall
+  // `side` is the direction from wall to pet, so +1 (wall on the pet's left)
+  // rotates "down" into "left". Under a ceiling it is a half turn.
+  //
+  // The mirror has to be derived alongside the rotation, never stored raw:
+  // rotating by pi flips the sprite's x axis too, so a pet travelling right
+  // while hanging needs the OPPOSITE mirror to a pet travelling right on the
+  // ground. `state.facing` always means the direction of travel in world
+  // space; this is the one place that turns it into a mirror.
+  let rotation = 0;
+  let mirror: -1 | 1 = s.facing;
+  if (s.climbingOn !== null) {
+    rotation = (s.climbSide * Math.PI) / 2;
+    mirror = (s.climbSide * s.climbDir) as -1 | 1;
+  } else if (s.hangingOn !== null) {
+    rotation = Math.PI;
+    mirror = -s.facing as -1 | 1;
+  }
 
   return {
     t: s.simT,
     cellId: frameAt(anim, phaseMs),
     x: s.x,
     y: s.y,
-    facing: pack.facing === 'none' ? 1 : s.facing,
+    facing: pack.facing === 'none' ? 1 : mirror,
     scale: 1,
     opacity: s.hidden ? 0 : 1,
     rotation,
@@ -149,6 +171,7 @@ export function createSim(opts: SimOptions): Sim {
     climbingOn: null,
     climbSide: 1,
     climbDir: -1,
+    hangingOn: null,
     behavior: opts.snapshot?.behavior ?? 'idle',
     behaviorT: 0,
     behaviorDur: 1500,
@@ -171,6 +194,11 @@ export function createSim(opts: SimOptions): Sim {
   function platformById(id: string | null): Platform | undefined {
     if (id === null) return undefined;
     return world.platforms.find((p) => p.id === id);
+  }
+
+  function ceilingById(id: string | null): Ceiling | undefined {
+    if (id === null) return undefined;
+    return world.ceilings.find((c) => c.id === id);
   }
 
   function wallById(id: string | null): Wall | undefined {
@@ -212,6 +240,7 @@ export function createSim(opts: SimOptions): Sim {
 
   function settleOntoGround(): void {
     state.climbingOn = null;
+    state.hangingOn = null;
 
     // Pull the pet onto real screen first. On a multi-monitor desktop the
     // union bounds contain dead space, so clamping to bounds is not enough.
@@ -316,6 +345,7 @@ export function createSim(opts: SimOptions): Sim {
   function startFalling(): void {
     state.standingOn = null;
     state.climbingOn = null;
+    state.hangingOn = null;
     state.behavior = 'fall';
     state.anim = 'fall';
     state.behaviorT = 0;
@@ -323,6 +353,7 @@ export function createSim(opts: SimOptions): Sim {
   }
 
   function attachToWall(w: Wall, dir: -1 | 1): void {
+    state.hangingOn = null;
     state.climbingOn = w.id;
     state.climbSide = w.side;
     state.climbDir = dir;
@@ -331,12 +362,48 @@ export function createSim(opts: SimOptions): Sim {
     state.y = Math.min(Math.max(state.y, w.y0), w.y1);
     state.vx = 0;
     state.vy = 0;
-    // Face along the direction of travel. The 90 degree rotation in
-    // deriveFrame puts the feet against the surface, and `side` decides which
-    // way round that rotation goes — so which mirror means "head up" flips
-    // with it. `side * dir` is the product that keeps the pet climbing head
-    // first on both edges of the desktop; `-dir` is right only on the right.
-    state.facing = (w.side * dir) as -1 | 1;
+    // `facing` is left alone: on a wall the pet travels vertically, so there
+    // is no world-x direction to record. deriveFrame builds the sprite mirror
+    // from `climbSide * climbDir` instead — see the comment there for why the
+    // two terms cannot be collapsed.
+  }
+
+  /** Attach to the underside of `c` and start walking along it upside down. */
+  function startHang(c: Ceiling): void {
+    state.hangingOn = c.id;
+    state.standingOn = null;
+    state.climbingOn = null;
+    state.y = c.y;
+    state.x = Math.min(Math.max(state.x, c.x0), c.x1);
+    state.vy = 0;
+    setBehavior('hang');
+  }
+
+  /** Another ceiling continuing at the same height across `x`. */
+  function adjoiningCeiling(from: Ceiling, x: number): Ceiling | undefined {
+    for (const c of world.ceilings) {
+      if (c.id === from.id) continue;
+      if (Math.abs(c.y - from.y) > EPS) continue;
+      if (x < c.x0 - EPS || x > c.x1 + EPS) continue;
+      return c;
+    }
+    return undefined;
+  }
+
+  /** The nearest ceiling a pet dropped at (x, y) could grab, if any. */
+  function ceilingNear(x: number, y: number): Ceiling | undefined {
+    let best: Ceiling | undefined;
+    let bestD = SURFACE_GRAB;
+    for (const c of world.ceilings) {
+      if (x < c.x0 || x > c.x1) continue;
+      // Only from below — the pet hangs under a ceiling, it does not stand on
+      // one. A drop above the surface belongs to whatever is beneath it.
+      const d = y - c.y;
+      if (d < -EPS || d > bestD) continue;
+      bestD = d;
+      best = c;
+    }
+    return best;
   }
 
   function startClimb(w: Wall, dir: -1 | 1): void {
@@ -353,7 +420,7 @@ export function createSim(opts: SimOptions): Sim {
    */
   function wallNear(x: number, y: number): Wall | undefined {
     let best: Wall | undefined;
-    let bestD = WALL_GRAB;
+    let bestD = SURFACE_GRAB;
     for (const w of world.walls) {
       if (y < w.y0 - EPS || y > w.y1 + EPS) continue;
       const d = Math.abs(w.x - x);
@@ -371,6 +438,16 @@ export function createSim(opts: SimOptions): Sim {
     if (p) return p.y - y;
     const r = regionAt(world.regions, x, y);
     return r ? r.y + r.h - y : Infinity;
+  }
+
+  /** A ceiling level with the top of `w`, spanning it. */
+  function ceilingAtWallTop(w: Wall): Ceiling | undefined {
+    for (const c of world.ceilings) {
+      if (Math.abs(c.y - w.y0) > EPS) continue;
+      if (w.x < c.x0 - EPS || w.x > c.x1 + EPS) continue;
+      return c;
+    }
+    return undefined;
   }
 
   /** A wall the pet would cross moving from `x` to `nextX` at height `y`. */
@@ -425,9 +502,10 @@ export function createSim(opts: SimOptions): Sim {
     state.animT += dtMs;
     state.behaviorT += dtMs;
 
-    const climbing = state.behavior === 'climb' || state.behavior === 'cling';
+    const attached =
+      state.behavior === 'climb' || state.behavior === 'cling' || state.behavior === 'hang';
 
-    if (!climbing && state.standingOn === null && state.behavior !== 'fall') {
+    if (!attached && state.standingOn === null && state.behavior !== 'fall') {
       startFalling();
     }
 
@@ -437,6 +515,8 @@ export function createSim(opts: SimOptions): Sim {
       stepClimb(dt);
     } else if (state.behavior === 'cling') {
       stepCling();
+    } else if (state.behavior === 'hang') {
+      stepHang(dt);
     } else if (state.behavior === 'walk') {
       stepWalk(dt);
     } else {
@@ -454,6 +534,7 @@ export function createSim(opts: SimOptions): Sim {
       state.behavior !== 'fall' &&
       state.behavior !== 'climb' &&
       state.behavior !== 'cling' &&
+      state.behavior !== 'hang' &&
       state.behaviorT >= state.behaviorDur
     ) {
       pickBehavior();
@@ -465,6 +546,21 @@ export function createSim(opts: SimOptions): Sim {
     state.vy += world.gravity * dt;
     state.y += state.vy * dt;
     state.x += state.vx * dt;
+
+    // Keep the fall inside the desktop. Stepping off the end of a surface
+    // carries the walking speed with it, and at a screen's OUTER edge — the
+    // end of the top-of-screen ceiling, say — that sideways drift is enough to
+    // sail off the side of the world. The pet then lands on the world floor
+    // beyond the screen, out of sight, where the side wall no longer reaches
+    // it and it never comes back.
+    if (state.vx !== 0 && !regionAt(world.regions, state.x, state.y, 0)) {
+      const r = nearestRegion(state.x, state.y);
+      const clamped = Math.min(Math.max(state.x, r.x), r.x + r.w);
+      if (clamped !== state.x) {
+        state.x = clamped;
+        state.vx = 0;
+      }
+    }
 
     if (state.vy <= 0) return;
 
@@ -533,6 +629,12 @@ export function createSim(opts: SimOptions): Sim {
         return;
       }
 
+      // A ceiling meeting the wall's top — the top edge of the screen, or of
+      // a window the wall runs past. Going over the lip onto the underside is
+      // how the pet reaches a ceiling without being carried there.
+      const roof = pack.behavior.can.hang ? ceilingAtWallTop(w) : undefined;
+      if (roof) return startHang(roof);
+
       state.y = w.y0;
       setBehavior('cling');
     } else if (state.climbDir === 1 && state.y >= w.y1) {
@@ -561,6 +663,71 @@ export function createSim(opts: SimOptions): Sim {
         setBehavior('cling');
       }
     }
+  }
+
+  /**
+   * Walking upside down along the underside of something.
+   *
+   * The mirror of `stepWalk`, minus gravity: while attached there is no fall
+   * to integrate, so the only questions are where the surface ends and when to
+   * let go. `vx === 0` means the pet is resting mid-ceiling rather than
+   * travelling — the same two-mode life it has on a wall (`climb` / `cling`),
+   * folded into one behaviour because a ceiling has no up and down to choose
+   * between.
+   */
+  function stepHang(dt: number): void {
+    const c = ceilingById(state.hangingOn);
+    if (!c) return startFalling(); // the window it was under closed
+    state.y = c.y;
+
+    if (state.behaviorT >= state.behaviorDur) {
+      // Time to reconsider. Letting go is the only exit that does not need
+      // somewhere to walk to, so it has to stay reasonably likely.
+      if (pack.behavior.can.fall && chance(state, 0.3)) return startFalling();
+      const wasMoving = state.vx !== 0;
+      setBehavior('hang');
+      if (chance(state, 0.5)) state.facing = state.facing === 1 ? -1 : 1;
+      state.vx = wasMoving ? 0 : state.facing * pack.behavior.speed.walk * HANG_SPEED;
+    }
+
+    // Resting: an upright idle, turned upside down by the pi rotation.
+    state.anim = state.vx === 0 ? 'idle' : 'hang';
+    if (state.vx === 0) return;
+
+    const speed = Math.abs(state.vx);
+    state.vx = state.facing * speed;
+    const nextX = state.x + state.vx * dt;
+
+    const turn = () => {
+      state.facing = state.facing === 1 ? -1 : 1;
+      state.vx = state.facing * speed;
+    };
+
+    if (nextX < c.x0 || nextX > c.x1) {
+      const next = adjoiningCeiling(c, nextX);
+      if (next) {
+        state.hangingOn = next.id;
+        state.x = nextX;
+        state.odometer += Math.abs(state.vx * dt);
+        return;
+      }
+      // The edge of a window's title bar. Mostly turn back; sometimes drop.
+      if (pack.behavior.can.fall && chance(state, 0.15)) {
+        state.x = nextX;
+        startFalling();
+        return;
+      }
+      turn();
+      return;
+    }
+
+    if (!regionAt(world.regions, nextX, state.y)) {
+      turn();
+      return;
+    }
+
+    state.x = nextX;
+    state.odometer += Math.abs(state.vx * dt);
   }
 
   function stepCling(): void {
@@ -660,6 +827,15 @@ export function createSim(opts: SimOptions): Sim {
       return;
     }
 
+    if (state.hangingOn !== null) {
+      // Ride the window it is hanging under; drop if that window has gone.
+      const c = ceilingById(state.hangingOn);
+      if (!c) return startFalling();
+      state.y = c.y;
+      if (state.x < c.x0 || state.x > c.x1) startFalling();
+      return;
+    }
+
     const standing = platformById(state.standingOn);
     if (standing) {
       // Ride it — the window this pet is sitting on may have been dragged.
@@ -727,12 +903,12 @@ export function createSim(opts: SimOptions): Sim {
             settleOntoGround();
             setBehavior('idle');
           } else if (e.name === 'come-here' && e.x !== undefined) {
-            if (state.climbingOn === null) {
+            if (state.climbingOn === null && state.hangingOn === null) {
               state.facing = e.x < state.x ? -1 : 1;
               setBehavior('walk');
             }
           } else if (e.name === 'sleep') {
-            if (state.climbingOn === null) setBehavior('sleep');
+            if (state.climbingOn === null && state.hangingOn === null) setBehavior('sleep');
           } else if (e.name === 'wake') {
             setBehavior('idle');
           } else if (e.name === 'place' && e.x !== undefined && e.y !== undefined) {
@@ -745,17 +921,25 @@ export function createSim(opts: SimOptions): Sim {
             state.vx = 0;
             state.vy = 0;
             state.climbingOn = null;
+            state.hangingOn = null;
 
-            // Dropped against a side edge: hang there. Without this the only
-            // way onto a wall is to catch the pet mid-wander, since it can't
-            // be aimed at one.
+            // Dropped against a wall or just under an edge: stick there.
+            // Without this the only way onto either is to catch the pet
+            // mid-wander, since it cannot be aimed at one.
             //
             // Ground wins ties. Near the bottom corner of a screen every drop
             // is within grabbing distance of the wall, and silently pasting
             // the pet to the edge when the user clearly meant the floor is
             // worse than the occasional missed wall.
+            const grounded = dropHeight(state.x, state.y) <= SURFACE_GRAB;
+            const roof = pack.behavior.can.hang ? ceilingNear(state.x, state.y) : undefined;
             const w = pack.behavior.can.climb ? wallNear(state.x, state.y) : undefined;
-            if (w && dropHeight(state.x, state.y) > WALL_GRAB) {
+
+            if (!grounded && roof) {
+              // A ceiling beats a wall: dropping the pet just under a title
+              // bar is aiming at the title bar, even in a corner.
+              startHang(roof);
+            } else if (!grounded && w) {
               attachToWall(w, -1);
               setBehavior('cling');
             } else {
@@ -787,8 +971,9 @@ export function createSim(opts: SimOptions): Sim {
 }
 
 /**
- * Convenience for hosts and tests: a single-screen world with a floor.
- * Walls run down both outer edges, so the pet can climb even here.
+ * Convenience for hosts and tests: a single-screen world with a floor, walls
+ * down both outer edges, and a ceiling along the top — every surface type the
+ * pet knows, in the smallest possible world.
  */
 export function simpleWorld(w: number, h: number, rev = 1): World {
   return {
@@ -800,6 +985,9 @@ export function simpleWorld(w: number, h: number, rev = 1): World {
       { id: 'wl', x: 0, y0: 0, y1: h, side: 1 },
       { id: 'wr', x: w, y0: 0, y1: h, side: -1 },
     ],
+    // The top edge is an underside: climb a wall to the top and the pet can
+    // carry on upside down across it.
+    ceilings: [{ id: 'roof', x0: 0, x1: w, y: 0 }],
     gravity: 900,
     reducedMotion: false,
   };

@@ -1,5 +1,5 @@
 import { subtractSpans, type Span } from './geom.js';
-import type { Platform, Rect, Wall } from './types.js';
+import type { Ceiling, Platform, Rect, Wall } from './types.js';
 
 /**
  * Turns a list of screens into the surfaces the pet can use.
@@ -41,9 +41,11 @@ export interface ScreenInfo {
 export function buildDesktopGeometry(list: readonly ScreenInfo[]): {
   platforms: Platform[];
   walls: Wall[];
+  ceilings: Ceiling[];
 } {
   const platforms: Platform[] = [];
   const walls: Wall[] = [];
+  const ceilings: Ceiling[] = [];
 
   for (const s of list) {
     const r = s.region;
@@ -86,6 +88,17 @@ export function buildDesktopGeometry(list: readonly ScreenInfo[]): {
       });
     }
 
+    // ---- ceiling: the top edge, minus any screen directly above ------------
+    // The mirror of the ground rule. Where a screen sits above, that stretch
+    // is its floor's underside and belongs to it, not here.
+    const above: Span[] = list
+      .filter((o) => o.id !== s.id && Math.abs(o.region.y + o.region.h - r.y) <= TOUCH)
+      .map((o) => ({ a: o.region.x, b: o.region.x + o.region.w }));
+
+    for (const [i, span] of subtractSpans(edge, above).entries()) {
+      ceilings.push({ id: `roof:${s.id}:${i}`, x0: span.a, x1: span.b, y: r.y });
+    }
+
     // ---- walls: side edges, minus any screen alongside ---------------------
     for (const side of [
       { x: r.x, dir: 1 as const, key: 'l', neighbourEdge: (o: Rect) => o.x + o.w },
@@ -107,5 +120,5 @@ export function buildDesktopGeometry(list: readonly ScreenInfo[]): {
     }
   }
 
-  return { platforms, walls };
+  return { platforms, walls, ceilings };
 }

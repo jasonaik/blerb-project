@@ -242,7 +242,20 @@ Two supporting rules, both of which the trapped-pet bug hid behind:
 
 Two screens rarely line up exactly. When the pet climbs to the top of a wall it checks for a **mantle target** — a platform within 96px above the lip — and hauls itself up. That is what gets it from a laptop onto an external monitor sitting above and offset sideways; without it the pet reaches the corner and is stuck.
 
-**Dropping the pet by hand can attach it to a wall.** `place` looks for a wall within `WALL_GRAB` (24px) of the drop point and clings to it, because the pet can't be aimed at a wall any other way — it only reaches one mid-wander. Ground wins ties: near a screen's bottom corner *every* drop is within grabbing distance of the side wall, so a wall only beats the floor when the drop is more than `WALL_GRAB` above the ground. Silently pasting the pet to the edge when the user aimed at the taskbar is the worse failure.
+**Ceilings are a third surface type, and a separate `World.ceilings` list — not a flag on `Platform`.** Half a dozen places ask "what is under the pet" (`platformUnder`, `lowestPlatformAt`, `stepFall`'s landing loop, `adjoining`, `mantleTarget`, `settleOntoGround`) and every one of them would have needed to remember to exclude undersides. Forgetting one gives you a pet that falls upwards.
+
+Where they come from:
+
+- **every screen's top edge**, minus any screen directly above — the mirror of the ground rule.
+- **every window's top edge**, from below. This is the surface that always works: a maximized window has *no room above* its top edge, so the pet standing there would be entirely off-screen, but there is always room to hang underneath. That is why `scanWindows` no longer filters out `WS_MAXIMIZE` (Shimeji does) and why the scanner's ledge test is stricter than its ceiling test — `MIN_LEDGE_Y` (72px of clearance above) versus `MIN_HANG_ROOM` (40px of window below). They are not duplicates.
+
+The pet reaches a ceiling by being dropped under one, or by climbing a wall whose top meets one — climb to the top of the screen and it carries on upside down across it.
+
+**`facing` means the direction of travel in world space, and the sprite mirror is derived in `deriveFrame` — never stored.** A half-turn flips the sprite's x axis, so a pet travelling right while hanging needs the *opposite* mirror to one travelling right on the ground. Storing the mirror and calling it `facing` is what produced the upside-down climb on left-hand walls; the same trap, one rotation further round.
+
+**A falling pet needs horizontal containment.** Stepping off the end of a surface carries the walking speed with it, and at a screen's *outer* edge — the end of the top-of-screen ceiling, say — that sideways drift is enough to sail off the side of the world. The pet then lands on the world floor beyond the screen, below the side wall's reach, and never comes back. `stepFall` clamps x into the nearest region and kills `vx` when a step would leave every screen. Measured: 2/8 seeds escaped without it.
+
+**Dropping the pet by hand can attach it to a wall or a ceiling.** `place` looks for a wall within `WALL_GRAB` (24px) of the drop point and clings to it, because the pet can't be aimed at a wall any other way — it only reaches one mid-wander. Ground wins ties: near a screen's bottom corner *every* drop is within grabbing distance of the side wall, so a wall only beats the floor when the drop is more than `WALL_GRAB` above the ground. Silently pasting the pet to the edge when the user aimed at the taskbar is the worse failure.
 
 Walls carry a `side` (the direction from wall to pet). Climbing rotates the sprite by `side * π/2` about its anchor so its feet meet the surface, and sets `facing = side * climbDir` so it goes head-first. **Both terms are needed.** The rotation's handedness flips with the wall, so which mirror means "head up" flips with it too — `facing = -climbDir` looks correct on a right-hand wall and renders the pet upside down on a left-hand one. Invisible while `climb` was aliased to `walk` on a symmetric blob; obvious the moment the art has a head. Tested via `facing * sin(rotation)`, the direction the nose actually points, rather than via `facing` alone.
 

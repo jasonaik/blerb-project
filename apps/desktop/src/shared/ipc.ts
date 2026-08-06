@@ -13,6 +13,8 @@ export interface Settings {
   launchAtLogin: boolean;
   /** Cling to and climb the outer edges of the desktop. */
   climbing: boolean;
+  /** Hang upside down under window top edges and the top of the screen. */
+  hanging: boolean;
   /** Display scale multiplier for the sprite. 32px art at 2 → 64px on screen. */
   petScale: number;
   /** Pack directory name under packs/. */

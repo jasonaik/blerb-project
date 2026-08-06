@@ -70,6 +70,12 @@
         <input type="checkbox" id="climbing" />
       </div>
       <div class="row">
+        <label for="hanging">Can hang upside down
+          <span class="hint">Hangs under the top edge of any window, and the top of the screen.</span>
+        </label>
+        <input type="checkbox" id="hanging" />
+      </div>
+      <div class="row">
         <label for="debugOverlay">Debug overlay
           <span class="hint">Draws the platforms the pet believes in. Useful, unglamorous.</span>
         </label>
@@ -84,7 +90,7 @@
 
     <script>
       const $ = (id) => document.getElementById(id);
-      const bools = ['petVisible', 'captureProtection', 'launchAtLogin', 'climbing', 'debugOverlay'];
+      const bools = ['petVisible', 'captureProtection', 'launchAtLogin', 'climbing', 'hanging', 'debugOverlay'];
 
       function render(s) {
         for (const k of bools) $(k).checked = s[k];

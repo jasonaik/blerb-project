@@ -58,6 +58,14 @@ function buildWorld(w: number, h: number): World {
       { id: 'wallL', x: 0, y0: 0, y1: h - 8, side: 1 },
       { id: 'wallR', x: w, y0: 0, y1: h - 8, side: -1 },
     ],
+    // The top of the page, plus the underside of every ledge — climb a wall
+    // to the top and the pet carries on upside down.
+    ceilings: [
+      { id: 'roof', x0: 0, x1: w, y: 0 },
+      ...platforms
+        .filter((p) => p.kind === 'ledge')
+        .map((p) => ({ id: 'c' + p.id, x0: p.x0, x1: p.x1, y: p.y })),
+    ],
     gravity: 900,
     reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
   };

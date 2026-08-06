@@ -105,6 +105,8 @@ const Behavior = z.object({
       drag: z.boolean().default(true),
       /** Cling to and climb the outer edges of the desktop. */
       climb: z.boolean().default(true),
+      /** Hang upside down from undersides — window top edges, the screen top. */
+      hang: z.boolean().default(true),
     })
     .default({}),
   /** 0..1 — how readily the pet climbs a wall instead of turning around. */
@@ -203,6 +205,7 @@ export const KNOWN_ANIMATIONS = [
   'stretch',
   'climb',
   'cling',
+  'hang',
   'look',
   'react_happy',
   'sulk',

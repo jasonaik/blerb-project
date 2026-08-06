@@ -9,6 +9,7 @@ export const DEFAULTS: Settings = {
   debugOverlay: false,
   launchAtLogin: false,
   climbing: true,
+  hanging: true,
   petScale: 2,
   pack: 'blob',
 };

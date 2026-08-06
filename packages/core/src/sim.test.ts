@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { resolvePack } from '@blerb/pack';
 import { createSim, simpleWorld, WORLD_FLOOR } from './sim.js';
-import { EPS, unionRect } from './geom.js';
+import { EPS, regionAt, unionRect } from './geom.js';
 import { buildDesktopGeometry, type ScreenInfo } from './desktop.js';
 import type { PetState, World } from './types.js';
 
@@ -361,6 +361,121 @@ describe('climbing', () => {
     expect(sim.state.climbingOn).toBeNull();
   });
 
+  it('hangs when the user drops it just under an edge', () => {
+    const world = simpleWorld(800, 400);
+    world.ceilings.push({ id: 'titlebar', x0: 200, x1: 600, y: 150 });
+    const sim = createSim({ pack: testPack(), world, seed: 101 });
+
+    sim.dispatch({ k: 'command', name: 'place', x: 400, y: 160 });
+    expect(sim.state.hangingOn).toBe('titlebar');
+    expect(sim.state.behavior).toBe('hang');
+    expect(sim.state.y).toBe(150); // snapped up to the surface
+    expect(sim.state.standingOn).toBeNull();
+  });
+
+  it('does not hang from an edge it was dropped above', () => {
+    // A ceiling is an underside. Dropping the pet over one means the thing
+    // beneath it, not the thing itself.
+    const world = simpleWorld(800, 400);
+    world.ceilings.push({ id: 'titlebar', x0: 200, x1: 600, y: 150 });
+    const sim = createSim({ pack: testPack(), world, seed: 103 });
+
+    sim.dispatch({ k: 'command', name: 'place', x: 400, y: 140 });
+    expect(sim.state.hangingOn).toBeNull();
+  });
+
+  it('renders upside down, nose in the direction of travel', () => {
+    const world = simpleWorld(800, 400);
+    world.ceilings.push({ id: 'titlebar', x0: 200, x1: 600, y: 150 });
+    const sim = createSim({ pack: testPack(), world, seed: 105 });
+    sim.dispatch({ k: 'command', name: 'place', x: 400, y: 160 });
+
+    const f = sim.frame();
+    expect(f.rotation).toBeCloseTo(Math.PI, 5);
+    // Rotating by pi flips the sprite's x axis, so the mirror that makes the
+    // nose point along travel is the OPPOSITE of the one used on the ground.
+    // `facing * cos(rotation)` is the world direction the nose actually points.
+    const noseX = f.facing * Math.cos(f.rotation);
+    expect(Math.sign(noseX)).toBe(sim.state.facing);
+  });
+
+  it('walks along a ceiling and stays on it', () => {
+    const world = simpleWorld(800, 400);
+    world.ceilings.push({ id: 'titlebar', x0: 200, x1: 600, y: 150 });
+    // can.fall off so it cannot simply let go — this is about the walking.
+    const sim = createSim({ pack: testPack({ can: { fall: false } }), world, seed: 107 });
+    sim.dispatch({ k: 'command', name: 'place', x: 400, y: 160 });
+
+    let minX = Infinity;
+    let maxX = -Infinity;
+    for (const dt of dtSequence(6000)) {
+      sim.step(dt);
+      expect(sim.state.hangingOn).toBe('titlebar');
+      expect(sim.state.y).toBe(150);
+      minX = Math.min(minX, sim.state.x);
+      maxX = Math.max(maxX, sim.state.x);
+    }
+    expect(maxX - minX).toBeGreaterThan(20); // it actually moved
+    expect(minX).toBeGreaterThanOrEqual(200);
+    expect(maxX).toBeLessThanOrEqual(600);
+  });
+
+  it('lets go of a ceiling and lands on the ground below', () => {
+    const world = simpleWorld(800, 400);
+    world.ceilings.push({ id: 'titlebar', x0: 200, x1: 600, y: 150 });
+    const sim = createSim({ pack: testPack(), world, seed: 109 });
+    sim.dispatch({ k: 'command', name: 'place', x: 400, y: 160 });
+
+    let landed = false;
+    for (const dt of dtSequence(20_000)) {
+      sim.step(dt);
+      if (sim.state.standingOn === 'floor') {
+        landed = true;
+        break;
+      }
+    }
+    expect(landed).toBe(true);
+  });
+
+  it('falls when the window it was hanging under closes', () => {
+    const world = simpleWorld(800, 400);
+    world.ceilings.push({ id: 'titlebar', x0: 200, x1: 600, y: 150 });
+    const sim = createSim({ pack: testPack(), world, seed: 111 });
+    sim.dispatch({ k: 'command', name: 'place', x: 400, y: 160 });
+    expect(sim.state.hangingOn).toBe('titlebar');
+
+    sim.dispatch({ k: 'world', world: { ...simpleWorld(800, 400), rev: 2, ceilings: [] } });
+    expect(sim.state.behavior).toBe('fall');
+    expect(sim.state.hangingOn).toBeNull();
+  });
+
+  it('climbs a wall to the top and carries on across the ceiling', () => {
+    // simpleWorld's roof spans the top edge and meets both walls.
+    const pack = testPack({ climbiness: 1, can: { fall: false }, speed: { climb: 400 } });
+    const sim = createSim({ pack, world: simpleWorld(800, 400), seed: 113 });
+    walkAt(sim, 780, 400, 1);
+
+    let hung = false;
+    for (const dt of dtSequence(6000)) {
+      sim.step(dt);
+      if (sim.state.hangingOn === 'roof') hung = true;
+    }
+    expect(hung).toBe(true);
+  });
+
+  it('never hangs when the pack says it cannot', () => {
+    const world = simpleWorld(800, 400);
+    world.ceilings.push({ id: 'titlebar', x0: 200, x1: 600, y: 150 });
+    const sim = createSim({ pack: testPack({ can: { hang: false } }), world, seed: 115 });
+
+    sim.dispatch({ k: 'command', name: 'place', x: 400, y: 160 });
+    expect(sim.state.hangingOn).toBeNull();
+    for (const dt of dtSequence(20_000)) {
+      sim.step(dt);
+      expect(sim.state.hangingOn).toBeNull();
+    }
+  });
+
   it('never climbs when the pack says it cannot', () => {
     const pack = testPack({ can: { climb: false }, climbiness: 1 });
     const sim = createSim({ pack, world: simpleWorld(800, 400), seed: 61 });
@@ -410,7 +525,7 @@ describe('multi-display', () => {
    */
   const desktop = (list: ScreenInfo[], rev = 1): World => {
     const regions = list.map((s) => s.region);
-    const { platforms, walls } = buildDesktopGeometry(list);
+    const { platforms, walls, ceilings } = buildDesktopGeometry(list);
     platforms.sort((a, z) => a.y - z.y); // as the scanner does
     return {
       rev,
@@ -418,6 +533,7 @@ describe('multi-display', () => {
       regions,
       platforms,
       walls,
+      ceilings,
       gravity: 900,
       reducedMotion: false,
     };
@@ -627,6 +743,23 @@ describe('multi-display', () => {
       }
     }
     expect(onLaptop).toBe(true);
+  });
+
+  it('never ends up outside every screen', () => {
+    // Seed 3 used to escape: it let go of the top-of-screen ceiling at x=0
+    // still carrying its walking speed, sailed left past the screen edge, and
+    // landed on the world floor off-screen — below the side wall's reach, so
+    // it never came back. A falling pet needs horizontal containment.
+    const world = desktop(DEV);
+    const sim = createSim({ pack: testPack({ climbiness: 1 }), world, seed: 3 });
+    sim.dispatch({ k: 'command', name: 'place', x: 700, y: 800 });
+    for (const dt of dtSequence(60_000)) {
+      sim.step(dt);
+      expect(
+        regionAt(world.regions, sim.state.x, sim.state.y),
+        `off every screen at ${sim.state.x.toFixed(1)},${sim.state.y.toFixed(1)}`,
+      ).toBeDefined();
+    }
   });
 
   it('re-settles onto real screen when a monitor is unplugged', () => {

@@ -14,6 +14,7 @@
     "cling": { "fps": 1.5, "frames": [6, 7] }
   },
   "aliases": {
-    "sit": "idle", "sleep": "idle", "fall": "idle", "land": "idle", "stretch": "idle"
+    "sit": "idle", "sleep": "idle", "fall": "idle", "land": "idle",
+    "stretch": "idle", "hang": "walk"
   }
 }

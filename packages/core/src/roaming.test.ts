@@ -35,8 +35,8 @@ const DEV: ScreenInfo[] = [
 
 const world = (): World => {
   const regions = DEV.map((s) => s.region);
-  const { platforms, walls } = buildDesktopGeometry(DEV);
-  return { rev: 1, bounds: unionRect(regions), regions, platforms, walls, gravity: 900, reducedMotion: false };
+  const { platforms, walls, ceilings } = buildDesktopGeometry(DEV);
+  return { rev: 1, bounds: unionRect(regions), regions, platforms, walls, ceilings, gravity: 900, reducedMotion: false };
 };
 
 const dts = Array.from({ length: 400_000 }, (_, i) => 14 + ((i * 7) % 6)); // ~1.8h

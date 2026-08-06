@@ -16,6 +16,22 @@ import * as win32 from './win32';
  * Electron displays speak DIP. Convert exactly once, here.
  */
 
+/** Two edges within this many DIP count as touching. */
+const TOUCH = 2;
+
+/** Narrower than this and a window is a tooltip or a sliver, not furniture. */
+const MIN_WINDOW_W = 140;
+
+/** A window must extend this far below its top edge to be worth hanging under. */
+const MIN_HANG_ROOM = 40;
+
+/**
+ * Clearance above a window's top edge before the pet can STAND on it. Roughly
+ * the sprite's height at 2x, so a pet on the ledge is fully visible rather
+ * than sliced off by the top of the screen.
+ */
+const MIN_LEDGE_Y = 72;
+
 export interface Scanner {
   start(intervalMs?: number): void;
   stop(): void;
@@ -47,7 +63,7 @@ export function createScanner(events: ScannerEvents): Scanner {
     const list = screens();
     const regions = list.map((s) => s.region);
     const bounds = unionRect(regions);
-    const { platforms, walls } = buildDesktopGeometry(list);
+    const { platforms, walls, ceilings } = buildDesktopGeometry(list);
 
     let fullscreen = false;
 
@@ -59,28 +75,47 @@ export function createScanner(events: ScannerEvents): Scanner {
         const br = screen.screenToDipPoint({ x: w.right, y: w.bottom });
         const wDip = br.x - tl.x;
         const hDip = br.y - tl.y;
-        if (wDip < 140) continue;
+        if (wDip < MIN_WINDOW_W) continue;
 
-        // The ledge must sit on a screen, with room above for the pet to be
-        // visible standing on it and clear of the ground it already has.
+        // The window's top edge has to be on a screen, above that screen's
+        // ground, with enough window below the edge to hang under.
         const host = list.find(
           (s) =>
-            tl.y > s.region.y + 72 &&
-            tl.y < s.floorY - 24 &&
+            tl.y >= s.region.y - TOUCH &&
+            tl.y < s.floorY - MIN_HANG_ROOM &&
+            br.y > tl.y + MIN_HANG_ROOM &&
             br.x > s.region.x &&
             tl.x < s.region.x + s.region.w,
         );
         if (!host) continue;
-        if (wDip >= host.region.w * 0.96 && hDip >= host.region.h * 0.96) continue;
 
-        platforms.push({
-          id: `w${w.id}`,
-          x0: Math.max(tl.x, host.region.x),
-          x1: Math.min(br.x, host.region.x + host.region.w),
-          y: tl.y,
-          kind: 'ledge',
-          passthrough: true,
-        });
+        const x0 = Math.max(tl.x, host.region.x);
+        const x1 = Math.min(br.x, host.region.x + host.region.w);
+
+        // A ceiling under EVERY window's top edge, maximized ones included.
+        // This is the surface that works regardless of window size: there is
+        // always room below an edge, never necessarily any above it.
+        // Skipped only when it would sit on top of the screen's own roof.
+        if (tl.y > host.region.y + TOUCH) {
+          ceilings.push({ id: `wc${w.id}`, x0, x1, y: tl.y });
+        }
+
+        // A ledge on top needs room ABOVE for the pet to be visible standing
+        // there, which a maximized window simply does not have — its top edge
+        // is the screen edge. That is why this test is stricter than the one
+        // for the ceiling, not a duplicate of it.
+        const roomAbove = tl.y > host.region.y + MIN_LEDGE_Y;
+        const fillsScreen = wDip >= host.region.w * 0.96 && hDip >= host.region.h * 0.96;
+        if (roomAbove && !fillsScreen) {
+          platforms.push({
+            id: `w${w.id}`,
+            x0,
+            x1,
+            y: tl.y,
+            kind: 'ledge',
+            passthrough: true,
+          });
+        }
       }
 
       // Exclusive/borderless fullscreen: the foreground window covers a whole
@@ -103,19 +138,20 @@ export function createScanner(events: ScannerEvents): Scanner {
     platforms.sort((a, z) => a.y - z.y);
     events.onFullscreen(fullscreen);
 
-    const sig = JSON.stringify([bounds, regions, platforms, walls]);
+    const sig = JSON.stringify([bounds, regions, platforms, walls, ceilings]);
     if (sig !== lastSig) {
       lastSig = sig;
       rev++;
       if (process.env.BLERB_DEBUG) {
         console.log(
           `[scan] rev=${rev} koffi=${win32.available} screens=${list.length} ` +
-            `fullscreen=${fullscreen} platforms=${platforms.length} walls=${walls.length}`,
+            `fullscreen=${fullscreen} platforms=${platforms.length} walls=${walls.length} ceilings=${ceilings.length}`,
         );
         for (const p of platforms) console.log(`   floor ${p.id} y=${Math.round(p.y)} x=${Math.round(p.x0)}..${Math.round(p.x1)}`);
+        for (const c of ceilings) console.log(`   roof  ${c.id} y=${Math.round(c.y)} x=${Math.round(c.x0)}..${Math.round(c.x1)}`);
         for (const w of walls) console.log(`   wall  ${w.id} x=${Math.round(w.x)} y=${Math.round(w.y0)}..${Math.round(w.y1)} side=${w.side}`);
       }
-      events.onWorld({ rev, bounds, regions, platforms, walls, gravity: 900, reducedMotion: false });
+      events.onWorld({ rev, bounds, regions, platforms, walls, ceilings, gravity: 900, reducedMotion: false });
     }
   }
 
@@ -142,6 +178,6 @@ export function createScanner(events: ScannerEvents): Scanner {
 export function fallbackWorld(): World {
   const list = screens();
   const regions = list.map((s) => s.region);
-  const { platforms, walls } = buildDesktopGeometry(list);
-  return { rev: 0, bounds: unionRect(regions), regions, platforms, walls, gravity: 900, reducedMotion: false };
+  const { platforms, walls, ceilings } = buildDesktopGeometry(list);
+  return { rev: 0, bounds: unionRect(regions), regions, platforms, walls, ceilings, gravity: 900, reducedMotion: false };
 }
