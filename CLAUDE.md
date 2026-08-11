@@ -173,10 +173,18 @@ A complete, working pet (`packs/blob/pet.json`, minus its `aliases` block):
 | Command | Status |
 |---|---|
 | `preview <packDir>` | Phase 0 — built |
-| `from-sheet`, `from-frames`, `from-gif`, `doctor` | Phase 3 |
+| `from-sheet`, `from-frames`, `from-gif`, `doctor` | Phase 3 — built |
 | `from-image` (procedural gait rig) | Phase 4 |
 
 **Documented input requirements for imported art** (`docs/pet-art.md`, and `doctor` warnings): PNG with alpha · one character, no scene, no baked drop-shadow · facing right · feet at the bottom, uncropped · ≥2px transparent margin · 64–512px tall · pixel art at **native** resolution, not upscaled.
+
+**The one rule the importers are built around: frames off one canvas are REGISTERED, and registration is the animation.** The bob of a walk cycle exists as where each frame was drawn, so all frames of a group are trimmed with ONE union box and share ONE anchor derived from their max-alpha composite. Per-frame tight-trimming — the obvious implementation, and what people do by hand — silently turns every walk cycle into a statue. `layout.test.ts` has a test named "preserves the bob" that exists to keep this true.
+
+Cell geometry is chosen so the schema's DEFAULT grid anchor `[w/2, h-1]` lands exactly on the derived anchor (content is placed around the anchor, symmetric in x, contact row as the last row). That is why an imported pet.json contains no `cells` block — and it must stay that way; an importer that starts writing explicit cells is hiding a layout bug.
+
+Everything pixel-pure lives in `src/import/` (raster, layout, pixelart, spec) and is tested on hand-built ten-pixel images; `io.ts` is the only file that touches sharp or the disk. Pixel-art/upscale detection (`detectForImport`) runs over ALL frames stacked, never one frame — one blocky frame can have all-even run lengths by pure coincidence (a 2px bar at native res is pixel-identical to a 1px bar at 2×; the ambiguity is inherent), and a detected "native" size under 8px means the sprite was just small, not upscaled. Both guards exist because tests caught the failures.
+
+GIF/WebP import: fps from the modal frame delay; byte-identical consecutive frames are stored once and replayed by index (sharp's own webp encoder does this merge at encode time too, which is why the dedup is unit-tested against `collapseDuplicates` rather than end-to-end through an encoder).
 
 `from-image` uses **procedural motion, not AI** — squash/stretch about the ground anchor, double-bounce bob, a 4° lean into travel. AI frame generation is rejected: its failure mode is a character that visibly flickers into a *different character* eight times a second.
 

@@ -16,7 +16,8 @@
   "dependencies": {
     "@blerb/core": "workspace:*",
     "@blerb/pack": "workspace:*",
-    "@blerb/render-canvas": "workspace:*"
+    "@blerb/render-canvas": "workspace:*",
+    "sharp": "^0.35.3"
   },
   "devDependencies": {
     "tsup": "^8.3.5",

@@ -16,6 +16,7 @@
     "test:watch": "vitest",
     "lint": "eslint .",
     "preview": "pnpm --filter @blerb/petgen preview packs/blob",
+    "petgen": "pnpm --filter @blerb/petgen petgen",
     "desktop": "pnpm build && pnpm --filter blerb-desktop start",
     "blob": "node packages/petgen/scripts/make-blob-atlas.mjs"
   },
