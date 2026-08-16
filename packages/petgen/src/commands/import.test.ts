@@ -391,6 +391,23 @@ describe('from-gif', () => {
     expect(manifest.animations['walk']).toEqual({ frames: [0, 1, 2], fps: 10 });
   });
 
+  it('preserves held poses: a frame with 3x the modal delay plays three times', async () => {
+    const frames = [0, 1, 2].map((i) => {
+      const r = makeRaster(20, 20);
+      rect(r, 2 + i * 5, 10, 8 + i * 5, 19);
+      return r;
+    });
+    const file = join(tmp, 'held.webp');
+    await writeAnimated(file, frames, [100, 300, 100], 'webp');
+
+    const out = join(tmp, 'held-pet');
+    await fromGif({ inputs: [file], outDir: out });
+
+    const manifest = await readManifest(out);
+    expect(manifest.grid.count).toBe(3);
+    expect(manifest.animations['held']).toEqual({ frames: [0, 1, 1, 1, 2], fps: 10 });
+  });
+
   it('maps several files of different sizes onto one atlas with correct offsets', async () => {
     // walk: 3 frames, 20x20, 7px-wide content. idle: 2 frames, 16x24, 11px.
     const walkFrames = [0, 1, 2].map((i) => {

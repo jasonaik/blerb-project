@@ -93,17 +93,29 @@ export async function fromGif(o: FromGifOptions): Promise<string> {
     // Collapse byte-identical consecutive frames into repeated indices.
     const { unique, play } = collapseDuplicates(frames);
 
+    // Variable frame timing — real sprite GIFs hold key poses 2-3x longer
+    // than the base tick — survives as repeated indices: a 150ms frame at a
+    // 50ms modal delay is played three times. Found by importing actual
+    // Gen-5 battle sprites, where flattening to the modal rate visibly
+    // rushed every held pose.
     const delay = modal(delaysMs);
-    const spread = Math.max(...delaysMs) - Math.min(...delaysMs);
-    if (delaysMs.length > 1 && spread > delay * 0.25) {
+    const repeats = delaysMs.map((d) => Math.max(1, Math.min(8, Math.round(d / delay))));
+    const timedPlay: number[] = [];
+    play.forEach((u, j) => {
+      for (let k = 0; k < repeats[j]!; k++) timedPlay.push(u);
+    });
+    // Only warn when a delay is badly off every multiple of the modal tick —
+    // that part of the timing genuinely cannot be represented.
+    const misfit = delaysMs.some((d) => Math.abs(d / delay - Math.round(d / delay)) > 0.25);
+    if (misfit) {
       console.warn(
-        `${input}: frame delays vary (${Math.min(...delaysMs)}–${Math.max(...delaysMs)}ms) — ` +
-          `using the most common (${delay}ms). Variable timing does not survive import.`,
+        `${input}: frame delays (${Math.min(...delaysMs)}–${Math.max(...delaysMs)}ms) are not ` +
+          `multiples of the base ${delay}ms tick — timing is approximated to the nearest multiple.`,
       );
     }
     const fps = Math.min(50, Math.max(1, Math.round((1000 / delay) * 100) / 100));
 
-    groups.push({ anim: o.anim ?? slugFromFilename(input), frames: unique, play, fps });
+    groups.push({ anim: o.anim ?? slugFromFilename(input), frames: unique, play: timedPlay, fps });
   }
 
   const dupNames = groups.map((g) => g.anim).filter((n, i, a) => a.indexOf(n) !== i);
