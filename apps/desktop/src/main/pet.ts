@@ -50,10 +50,19 @@ export function createPetHost(
   let prevKey = '';
   const listeners: ((s: PetState) => void)[] = [];
 
-  /** Everything a viewer can see. If none of it changed, nobody needs telling. */
+  /**
+   * Everything a viewer can see. If none of it changed, nobody needs telling.
+   *
+   * squash is in the key QUANTIZED to 0.01: without it, squash-only changes
+   * never broadcast — a rigged pet stayed drawn mid-land-pulse (75% height)
+   * through a whole sleep, and breathing never rendered at all. Raw sy would
+   * be the opposite failure: the breathing sine changes every tick, which
+   * would pin this loop at ACTIVE_MS forever. At 0.01 steps, breathing
+   * broadcasts a few times a second and the loop still parks in between.
+   */
   const key = (s: PetState): string => {
     const f = deriveFrame(pack, s);
-    return `${f.cellId}|${f.x.toFixed(1)}|${f.y.toFixed(1)}|${f.facing}|${f.opacity}|${f.rotation.toFixed(3)}`;
+    return `${f.cellId}|${f.x.toFixed(1)}|${f.y.toFixed(1)}|${f.facing}|${f.opacity}|${f.rotation.toFixed(3)}|${f.squash.sy.toFixed(2)}`;
   };
 
   function tick(): void {

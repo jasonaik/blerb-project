@@ -129,9 +129,30 @@ export function detectPixelArt(r: Raster): PixelArtVerdict {
  *     really was just small and blocky — refuse the downscale. No real
  *     character is drawn 7px tall.
  */
-export function detectForImport(frames: readonly Raster[]): PixelArtVerdict {
+export interface DetectOptions {
+  /**
+   * The alpha channel was synthesized (e.g. by background removal, which
+   * writes exactly 0 or 255) rather than authored. A synthetic channel is
+   * binary BY CONSTRUCTION, so the binary-alpha vote carries no information
+   * and is suppressed — without this, every flood-filled photo got one free
+   * pixel-art vote, and flat-colour smooth art misdetected as pixel art.
+   */
+  alphaSynthetic?: boolean;
+}
+
+export function detectForImport(
+  frames: readonly Raster[],
+  opts: DetectOptions = {},
+): PixelArtVerdict {
   const first = frames[0];
   if (!first) return { pixelArt: false, scale: 1, votes: { fewColours: false, binaryAlpha: false, gridRuns: false } };
+  const suppress = (v: PixelArtVerdict): PixelArtVerdict => {
+    if (!opts.alphaSynthetic || !v.votes.binaryAlpha) return v;
+    const votes = { ...v.votes, binaryAlpha: false };
+    const count = (votes.fewColours ? 1 : 0) + (votes.gridRuns ? 1 : 0);
+    const pixelArt = count >= 2;
+    return { pixelArt, scale: pixelArt ? v.scale : 1, votes };
+  };
 
   if (frames.every((f) => f.w === first.w)) {
     // Same width: stack into one image and detect in a single pass.
@@ -150,9 +171,9 @@ export function detectForImport(frames: readonly Raster[]): PixelArtVerdict {
       const box = trimBox(sample);
       const nativeW = box ? (box.x1 - box.x0 + 1) / v.scale : 0;
       const nativeH = box ? (box.y1 - box.y0 + 1) / v.scale : 0;
-      if (nativeW < 8 || nativeH < 8) return { ...v, scale: 1 };
+      if (nativeW < 8 || nativeH < 8) return suppress({ ...v, scale: 1 });
     }
-    return v;
+    return suppress(v);
   }
 
   // Mixed canvas sizes can't stack, but per-frame combination is equivalent:
@@ -184,7 +205,7 @@ export function detectForImport(frames: readonly Raster[]): PixelArtVerdict {
       }
     }
   }
-  return { pixelArt, scale, votes };
+  return suppress({ pixelArt, scale, votes });
 }
 
 /** Take every k-th pixel — exact inverse of a nearest-neighbour upscale. */

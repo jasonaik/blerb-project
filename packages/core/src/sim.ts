@@ -1,4 +1,5 @@
 import { frameAt, type ResolvedPack } from '@blerb/pack';
+import { applyGait } from './gait.js';
 import { chance, rand, randRange, seedFrom, weightedPick } from './rng.js';
 import { EPS, regionAt } from './geom.js';
 import type {
@@ -109,7 +110,7 @@ export interface Sim {
  * in several — each overlay window derives its own frame from the broadcast
  * state, so a RenderFrame still never crosses a process boundary.
  */
-export function deriveFrame(pack: ResolvedPack, s: PetState): RenderFrame {
+export function deriveFrame(pack: ResolvedPack, s: PetState, displayScale = 1): RenderFrame {
   const anim = pack.animation(s.anim);
 
   // Phase-lock the walk cycle to distance travelled, not wall time, so the
@@ -139,7 +140,7 @@ export function deriveFrame(pack: ResolvedPack, s: PetState): RenderFrame {
     mirror = -s.facing as -1 | 1;
   }
 
-  return {
+  const frame: RenderFrame = {
     t: s.simT,
     cellId: frameAt(anim, phaseMs),
     x: s.x,
@@ -151,6 +152,9 @@ export function deriveFrame(pack: ResolvedPack, s: PetState): RenderFrame {
     squash: { sx: 1, sy: 1 },
     effects: [],
   };
+  // A pack with a procedural rig animates by deformation on top of whatever
+  // cell is showing — that is the whole of `from-image`.
+  return pack.rig ? applyGait(pack, s, frame, displayScale) : frame;
 }
 
 export function createSim(opts: SimOptions): Sim {

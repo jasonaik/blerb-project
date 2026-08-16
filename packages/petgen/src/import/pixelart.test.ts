@@ -141,6 +141,18 @@ describe('detectForImport', () => {
     expect(v.scale).toBe(2);
   });
 
+  it('suppresses the binary-alpha vote when the alpha was synthesized', () => {
+    // Flood-fill removal writes alpha as exactly 0/255, so binary alpha is
+    // true by construction and carries no evidence. Flat-colour smooth art
+    // (few colours + synthetic binary alpha) must NOT reach two votes.
+    const flat = makeRaster(64, 64);
+    for (let y = 10; y < 54; y++)
+      for (let x = 10; x < 54; x++)
+        if ((x * 3 + y) % 11 !== 0) set(flat, x, y, [90, 150, 210]); // one colour, ragged
+    expect(detectForImport([flat]).pixelArt).toBe(true); // authored alpha: pixel-arty
+    expect(detectForImport([flat], { alphaSynthetic: true }).pixelArt).toBe(false);
+  });
+
   it('refuses a downscale that would leave the sprite under 8px', () => {
     // All-even runs AND a plausible k, but the "native" sprite would be 5x4.
     const tiny = makeRaster(16, 16);

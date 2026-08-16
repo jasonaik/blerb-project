@@ -31,6 +31,14 @@ export interface EmitOptions {
   pixelArt: boolean;
   layout: AtlasLayout;
   animations: EmitAnimation[];
+  /** Procedural gait rig, for single-image packs. */
+  rig?: NonNullable<PetManifestInput['rig']> | undefined;
+  /**
+   * The art's resolution relative to its display size — a 4 here renders the
+   * cell at quarter size. How hi-res smooth art becomes a pet-sized pet
+   * without downsampling away detail the user might want at bigger scales.
+   */
+  atlasScale?: number | undefined;
 }
 
 export async function emitPack(o: EmitOptions): Promise<string> {
@@ -47,7 +55,7 @@ export async function emitPack(o: EmitOptions): Promise<string> {
     license: o.license,
     source: o.source,
     pixelArt: o.pixelArt,
-    atlas: { src: 'atlas.png' },
+    atlas: { src: 'atlas.png', ...(o.atlasScale && o.atlasScale !== 1 ? { scale: o.atlasScale } : {}) },
     grid: {
       w: o.layout.cellW,
       h: o.layout.cellH,
@@ -57,6 +65,7 @@ export async function emitPack(o: EmitOptions): Promise<string> {
       count: o.layout.count,
     },
     animations,
+    ...(o.rig ? { rig: o.rig } : {}),
   };
 
   // Through the real resolver BEFORE anything touches the disk — a bad --id

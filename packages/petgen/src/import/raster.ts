@@ -198,10 +198,24 @@ export function crop(src: Raster, x: number, y: number, w: number, h: number): R
   return out;
 }
 
-/** Does the raster contain any non-opaque, non-transparent alpha at all? */
+/** Does the raster contain ANY pixel that is not fully opaque? One is enough. */
 export function hasAlphaChannel(r: Raster): boolean {
   for (let i = 3; i < r.data.length; i += 4) {
     if (r.data[i]! < 255) return true;
   }
   return false;
+}
+
+/**
+ * Fraction of pixels that are actually transparent (below the trim
+ * threshold). The honest test for "is this image already cut out" — one
+ * stray 254-alpha pixel is not a cut-out, and treating it as one silently
+ * skipped background removal on otherwise-opaque art.
+ */
+export function transparentFraction(r: Raster): number {
+  let n = 0;
+  for (let i = 3; i < r.data.length; i += 4) {
+    if (r.data[i]! < 8) n++;
+  }
+  return n / (r.data.length / 4);
 }

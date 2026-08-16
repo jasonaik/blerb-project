@@ -174,7 +174,7 @@ A complete, working pet (`packs/blob/pet.json`, minus its `aliases` block):
 |---|---|
 | `preview <packDir>` | Phase 0 — built |
 | `from-sheet`, `from-frames`, `from-gif`, `doctor` | Phase 3 — built |
-| `from-image` (procedural gait rig) | Phase 4 |
+| `from-image` (procedural gait rig) | Phase 4 — built |
 
 **Documented input requirements for imported art** (`docs/pet-art.md`, and `doctor` warnings): PNG with alpha · one character, no scene, no baked drop-shadow · facing right · feet at the bottom, uncropped · ≥2px transparent margin · 64–512px tall · pixel art at **native** resolution, not upscaled.
 
@@ -187,6 +187,14 @@ Everything pixel-pure lives in `src/import/` (raster, layout, pixelart, spec) an
 GIF/WebP import: fps from the modal frame delay; byte-identical consecutive frames are stored once and replayed by index (sharp's own webp encoder does this merge at encode time too, which is why the dedup is unit-tested against `collapseDuplicates` rather than end-to-end through an encoder). **Variable frame timing survives as repeated indices** — a 150ms hold at a 50ms base tick plays its frame three times. Found by importing real Gen-5 battle sprites, which hold key poses 2–3 ticks; flattening them to the modal rate visibly rushed every held pose. APNG is *not* importable (libvips reads PNG single-frame); the CLI says so instead of silently importing one frame.
 
 `from-image` uses **procedural motion, not AI** — squash/stretch about the ground anchor, double-bounce bob, a 4° lean into travel. AI frame generation is rejected: its failure mode is a character that visibly flickers into a *different character* eight times a second.
+
+The gait lives in `packages/core/src/gait.ts` as a pure deformation applied inside `deriveFrame` whenever `pack.rig` exists, so every host gets it with zero renderer changes — the renderers already multiply `squash` into their transform. Facts a future session needs:
+
+- **Phase comes from `odometer`, not time.** Two footfalls per stride, feet locked to distance travelled; stopping freezes the pose instead of treadmilling. Squash is volume-preserving (`sx = 1/sy`) about the anchor, and lands **at contact** — the first cut had `1 + squash·cos2θ`, which is tallest at footfall, i.e. a trampoline; the sign is `1 − squash·cos2θ` and a test pins the direction. Every branch eases in over 150ms via `behaviorT`; the walk-exit snap is the one accepted discontinuity (fixing it needs the previous behavior in state).
+- **The desktop frame-identity key includes `squash.sy` quantized to 0.01** (`apps/desktop/src/main/pet.ts`). Without it, squash-only changes never broadcast — a rigged pet stayed drawn mid-land-pulse at 75% height through a whole sleep, and breathing never rendered. Raw sy would be the opposite failure: the sine changes every tick and pins the parked loop at 60Hz. Quantized, breathing broadcasts a few times a second and the loop parks in between. `resolvePack` guarantees every rig has a `walk` gait (synthesized from the schema's own defaults), so core has no hand-copied fallback table to drift; amplitude caps in the schema (`squash ≤ 0.5`, `breatheAmp ≤ 0.2`) plus a clamp in `applyGait` keep `sx = 1/sy` finite for every parseable pack.
+- **All amplitudes use DISPLAYED height, `cell.h / atlasScale`.** Hi-res art (official artwork, photos) ships full-resolution with `atlas.scale` set so it renders ~64px; from-image sets it for smooth art over 128px rather than resampling, so the pixels are still there when the user turns pet size up. The gait bobbing by file pixels made a 400px painting leap 24px per step.
+- **Walk deformation is upright-only** (`climbingOn`/`hangingOn` null); on a wall the sprite is already rotated and only breathing survives. Sleep breathes at 2× amplitude, 0.4× rate.
+- **Background removal is a 4-corner flood fill, not a chroma key** (`import/bgremove.ts`): only edge-connected backdrop is removed, so a white character on white keeps its interior whites — eye highlights, belly. The 1px alpha erode runs only on smooth art; it would blur a pixel-art outline. A borderless character eats itself, which from-image turns into a hard error rather than an empty pet — that is why the art docs demand a ≥2px margin.
 
 ---
 

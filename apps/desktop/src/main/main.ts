@@ -232,7 +232,7 @@ function startCursorWatcher(): void {
     if (dragLatch || !pet) return;
 
     const s = pet.sim.state;
-    const frame = deriveFrame(pet.pack, s);
+    const frame = deriveFrame(pet.pack, s, settings.petScale);
     const cell = pet.pack.cells.get(frame.cellId);
     if (!cell || s.hidden) return setInteractive(null);
 

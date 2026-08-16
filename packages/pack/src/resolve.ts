@@ -1,4 +1,4 @@
-import { PetManifest, type Animation, type Cell } from './schema.js';
+import { PetManifest, RigGait, type Animation, type Cell } from './schema.js';
 
 /**
  * Turns a validated manifest into something a renderer can draw without making
@@ -168,7 +168,12 @@ export function resolvePack(input: unknown, manifestUrl = './pet.json'): Resolve
     cells,
     animations,
     behavior: m.behavior,
-    rig: m.rig,
+    // A resolved rig always carries a 'walk' gait, synthesized from the
+    // schema's own defaults when the pack doesn't write one. This is what
+    // lets the sim look gaits up without a hand-copied fallback table that
+    // would drift the moment a schema default is retuned — the same
+    // normalize-at-resolve treatment animations get.
+    rig: m.rig ? { ...m.rig, gaits: { walk: RigGait.parse({}), ...m.rig.gaits } } : m.rig,
 
     animation(name: string): ResolvedAnimation {
       const direct = animations.get(name);

@@ -91,7 +91,9 @@ async function main(): Promise<void> {
 
   function paint(): void {
     if (!state) return;
-    const f = toLocal(deriveFrame(pack, state));
+    // petScale goes INTO deriveFrame (the gait's bob is an absolute offset
+    // that must ride the pet-size setting) as well as onto the frame scale.
+    const f = toLocal(deriveFrame(pack, state, petScale));
     const rect = spriteRect(f);
 
     if (debug) {

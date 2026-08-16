@@ -8,6 +8,7 @@ import {
   deriveAnchor,
   hasAlphaChannel,
   makeRaster,
+  transparentFraction,
   sameRaster,
   trimBox,
   unionBox,
@@ -169,6 +170,16 @@ describe('hasAlphaChannel', () => {
     for (let y = 0; y < 3; y++) for (let x = 0; x < 3; x++) px(r, x, y);
     px(r, 1, 1, 254);
     expect(hasAlphaChannel(r)).toBe(true);
+  });
+
+  it('transparentFraction counts genuinely transparent pixels, not near-opaque ones', () => {
+    const r = makeRaster(10, 10);
+    for (let y = 0; y < 10; y++) for (let x = 0; x < 10; x++) px(r, x, y);
+    px(r, 0, 0, 254); // not transparent — must not count
+    expect(transparentFraction(r)).toBe(0);
+    px(r, 1, 0, 0);
+    px(r, 2, 0, 3);
+    expect(transparentFraction(r)).toBeCloseTo(0.02, 10);
   });
 });
 

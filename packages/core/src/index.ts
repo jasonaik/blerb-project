@@ -31,5 +31,6 @@ export {
 } from './geom.js';
 
 export { buildDesktopGeometry, type ScreenInfo } from './desktop.js';
+export { applyGait } from './gait.js';
 
 export { rand, randRange, chance, weightedPick, seedFrom, type RngHolder } from './rng.js';

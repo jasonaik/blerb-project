@@ -68,22 +68,25 @@ const Animation = z.object({
  *
  * The slot exists in v1 of the format so adding it later is not a version bump.
  */
+/**
+ * One gait's tuning. Amplitude caps are correctness, not taste: the renderer
+ * derives sx = 1/sy, so a squash that can reach 1 divides by zero at the
+ * stride apex, and sleep doubles breatheAmp — the caps keep sy well clear of
+ * zero in every branch.
+ */
+export const RigGait = z.object({
+  strideLength: z.number().positive().default(22),
+  bobAmp: z.number().min(0).max(0.3).default(0.06),
+  squash: z.number().min(0).max(0.5).default(0.08),
+  tiltDeg: z.number().min(-30).max(30).default(4),
+  scuff: z.number().nonnegative().default(0.4),
+  breatheHz: z.number().positive().default(0.35),
+  breatheAmp: z.number().min(0).max(0.2).default(0.03),
+});
+
 const Rig = z.object({
   type: z.literal('procedural'),
-  /** Cell name to deform. */
-  base: z.string(),
-  gaits: z.record(
-    z.string(),
-    z.object({
-      strideLength: z.number().positive().default(22),
-      bobAmp: z.number().nonnegative().default(0.06),
-      squash: z.number().nonnegative().default(0.08),
-      tiltDeg: z.number().default(4),
-      scuff: z.number().nonnegative().default(0.4),
-      breatheHz: z.number().positive().default(0.35),
-      breatheAmp: z.number().nonnegative().default(0.03),
-    }),
-  ),
+  gaits: z.record(z.string(), RigGait),
 });
 
 const Behavior = z.object({

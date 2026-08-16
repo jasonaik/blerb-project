@@ -5,9 +5,11 @@ import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { resolvePack } from '@blerb/pack';
+import { deriveFrame } from '@blerb/core';
 import { fromSheet } from './fromSheet.js';
 import { fromFrames } from './fromFrames.js';
 import { assembleAnimations, fromGif } from './fromGif.js';
+import { fromImage } from './fromImage.js';
 import { diagnosePack } from './doctor.js';
 import { loadRaster } from '../import/io.js';
 import { blit, crop, makeRaster, trimBox, type Raster } from '../import/raster.js';
@@ -505,6 +507,145 @@ describe('from-gif', () => {
     expect(Object.keys(manifest.animations)).toEqual(['bounce-loop']);
     expect(manifest.animations['bounce-loop']!.fps).toBe(20);
     expect(manifest.animations['bounce-loop']!.frames).toHaveLength(3);
+  });
+});
+
+describe('from-image', () => {
+  it('turns one JPEG on a plain backdrop into a walking rigged pack', async () => {
+    // A rounded red creature with feet, on white, saved as an actual JPEG —
+    // no alpha channel at all, plus compression noise.
+    const src = makeRaster(64, 64);
+    for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) rect(src, x, y, x, y, [250, 250, 250]);
+    for (let y = 14; y < 50; y++) {
+      for (let x = 12; x < 52; x++) {
+        const dx = (x - 32) / 20, dy = (y - 32) / 18;
+        if (dx * dx + dy * dy <= 1) rect(src, x, y, x, y);
+      }
+    }
+    rect(src, 20, 50, 26, 57); // legs reach the "ground"
+    rect(src, 38, 50, 44, 57);
+    const input = join(tmp, 'creature.jpg');
+    await writeFile(
+      input,
+      await sharp(Buffer.from(src.data), { raw: { width: 64, height: 64, channels: 4 } })
+        .flatten({ background: '#fafafa' })
+        .jpeg({ quality: 92 })
+        .toBuffer(),
+    );
+
+    const out = join(tmp, 'image-pet');
+    await fromImage({ input, outDir: out });
+    expect((await diagnosePack(out)).errors).toBe(0);
+
+    const manifest = JSON.parse(await readFile(join(out, 'pet.json'), 'utf8')) as EmittedManifest & {
+      rig: { type: string; gaits: Record<string, { strideLength?: number }> };
+    };
+    expect(manifest.grid.count).toBe(1);
+    expect(manifest.rig.type).toBe('procedural');
+    expect(manifest.rig.gaits['walk']!.strideLength).toBeGreaterThan(10);
+
+    // The backdrop is gone and the feet sit on the anchor row.
+    const atlas = await loadRaster(join(out, 'atlas.png'));
+    const c = cellAt(manifest, 0);
+    const cell = crop(atlas, c.x, c.y, c.w, c.h);
+    const content = trimBox(cell)!;
+    expect(content.y1).toBe(manifest.grid.h - 1);
+    // Corners of the cell are transparent — the white is removed.
+    expect(trimBox(cell)!.x0).toBeGreaterThan(0);
+
+    // And the rig actually animates through the real deriveFrame: mid-stride
+    // the pet lifts and squashes; at contact it lands back on its feet.
+    const pack = resolvePack(JSON.parse(await readFile(join(out, 'pet.json'), 'utf8')));
+    const stride = manifest.rig.gaits['walk']!.strideLength!;
+    const base = {
+      x: 50, y: 90, vx: 0, vy: 0, facing: 1 as const,
+      standingOn: 'floor:0', climbingOn: null, climbSide: 1 as const, climbDir: -1 as const,
+      // behaviorT past the gait's ease-in window, or the deformation is
+      // (correctly) still neutral.
+      hangingOn: null, behavior: 'walk' as const, behaviorT: 500, behaviorDur: 1000,
+      anim: 'walk', animT: 0, simT: 0, odometer: 0, motionEma: 0, rng: 1,
+      hidden: false, worldRev: 0,
+    };
+    const contact = deriveFrame(pack, base);
+    const apex = deriveFrame(pack, { ...base, odometer: stride / 4 });
+    expect(contact.y).toBe(90);
+    expect(apex.y).toBeLessThan(90);
+    expect(apex.squash.sx * apex.squash.sy).toBeCloseTo(1, 10);
+  });
+
+  it('gives hi-res smooth art an atlas.scale so it renders at pet size', async () => {
+    // A 260px-tall smooth creature on white: the pixels must stay in the
+    // file, but the pack has to render ~64px — atlas.scale, not resampling.
+    const src = makeRaster(320, 320);
+    for (let y = 0; y < 320; y++) for (let x = 0; x < 320; x++) rect(src, x, y, x, y, [250, 250, 250]);
+    for (let y = 40; y < 280; y++) {
+      for (let x = 60; x < 260; x++) {
+        const dx = (x - 160) / 100, dy = (y - 160) / 120;
+        if (dx * dx + dy * dy <= 1) rect(src, x, y, x, y, [(x / 2) & 255, 90, 120]);
+      }
+    }
+    const input = join(tmp, 'big.jpg');
+    await writeFile(
+      input,
+      await sharp(Buffer.from(src.data), { raw: { width: 320, height: 320, channels: 4 } })
+        .flatten({ background: '#fafafa' })
+        .jpeg({ quality: 92 })
+        .toBuffer(),
+    );
+
+    const out = join(tmp, 'big-pet');
+    await fromImage({ input, outDir: out });
+    expect((await diagnosePack(out)).errors).toBe(0);
+    const manifest = JSON.parse(await readFile(join(out, 'pet.json'), 'utf8')) as {
+      atlas: { scale?: number };
+      rig: { gaits: Record<string, { strideLength?: number }> };
+    };
+    expect(manifest.atlas.scale).toBeGreaterThan(2); // ~240/64
+    // Stride is in world px, i.e. displayed size — a fraction of file px.
+    expect(manifest.rig.gaits['walk']!.strideLength).toBeLessThan(80);
+    expect(manifest.rig.gaits['walk']!.strideLength).toBeGreaterThan(10);
+  });
+
+  it('one stray near-opaque pixel does not disable background removal', async () => {
+    // A matte fringe artifact: opaque white backdrop, red creature, ONE pixel
+    // of alpha 254. The old any-alpha-at-all gate called this "already cut
+    // out" and imported a walking rectangle.
+    const src = makeRaster(40, 40);
+    for (let y = 0; y < 40; y++) for (let x = 0; x < 40; x++) rect(src, x, y, x, y, [250, 250, 250]);
+    for (let y = 10; y < 33; y++) for (let x = 8; x < 30; x++) if ((x + y) % 9 !== 0) rect(src, x, y, x, y);
+    src.data[(5 * 40 + 5) * 4 + 3] = 254;
+    const input = join(tmp, 'fringe.png');
+    await writePng(src, input);
+
+    const out = join(tmp, 'fringe-pet');
+    await fromImage({ input, outDir: out });
+    const atlas = await loadRaster(join(out, 'atlas.png'));
+    const manifest = await readManifest(out);
+    const dims = contentDims(atlas, manifest, 0);
+    expect(dims.w).toBeLessThan(30); // the creature, not the 40px backdrop
+  });
+
+  it('errors rather than emitting an empty pet when removal eats everything', async () => {
+    const solid = makeRaster(24, 24);
+    for (let y = 0; y < 24; y++) for (let x = 0; x < 24; x++) rect(solid, x, y, x, y);
+    const input = join(tmp, 'solid.png');
+    await writePng(solid, input);
+    await expect(fromImage({ input, outDir: join(tmp, 'x-img') })).rejects.toThrow(/nothing left/);
+  });
+
+  it('trusts existing transparency instead of flood-filling it', async () => {
+    const cut = makeRaster(32, 32);
+    rect(cut, 8, 10, 23, 29); // already on transparent background...
+    rect(cut, 8, 30, 16, 30); // ...with a ragged foot row (odd runs — see
+    // detectForImport: a plain even-sided rect reads as an accidental 2x)
+    const input = join(tmp, 'cut.png');
+    await writePng(cut, input);
+    const out = join(tmp, 'cut-pet');
+    await fromImage({ input, outDir: out });
+    expect((await diagnosePack(out)).errors).toBe(0);
+    const atlas = await loadRaster(join(out, 'atlas.png'));
+    const manifest = await readManifest(out);
+    expect(contentDims(atlas, manifest, 0)).toEqual({ w: 16, h: 21 });
   });
 });
 

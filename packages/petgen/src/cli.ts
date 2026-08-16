@@ -5,6 +5,7 @@ import { doctor } from './commands/doctor.js';
 import { fromSheet } from './commands/fromSheet.js';
 import { fromFrames } from './commands/fromFrames.js';
 import { fromGif } from './commands/fromGif.js';
+import { fromImage } from './commands/fromImage.js';
 
 const USAGE = `
 petgen — pet pack tooling
@@ -14,7 +15,7 @@ petgen — pet pack tooling
   petgen from-sheet <png>      import a sprite sheet
   petgen from-frames <dir>     import a folder of frames
   petgen from-gif <gif>...     import animated GIF/WebP (one animation per file)
-  petgen from-image <png>      import one static image + a gait rig (Phase 4)
+  petgen from-image <png|jpg>  import ONE picture; a procedural rig makes it walk
 
 Import options
   -o, --out <dir>       output pack directory (required; its name becomes the id)
@@ -24,6 +25,8 @@ Import options
   --cols/--margin/--spacing <n>   from-sheet: source layout, if not tight
   --pattern <p>         from-frames: filename shape, default {anim}_{i}.png
   --fps <n|anim=n>      from-frames: playback rate(s), default 8 (repeatable)
+  --tolerance <t>       from-image: backdrop match strictness 0..1, default 0.1
+  --keep-bg             from-image: skip background removal
   --id/--name/--author/--license  pack metadata
 
 Preview options
@@ -38,7 +41,7 @@ result. Input requirements for art are documented in docs/pet-art.md.
  * Flags that never take a value. Without this, `--no-open packs/blob` would
  * swallow the pack directory as the flag's argument.
  */
-const BOOLEAN_FLAGS = new Set(['no-open', 'help', 'debug']);
+const BOOLEAN_FLAGS = new Set(['no-open', 'help', 'debug', 'keep-bg']);
 
 /** Short aliases, expanded before parsing. */
 const SHORT: Record<string, string> = { '-o': '--out' };
@@ -202,9 +205,21 @@ async function main(): Promise<number> {
       return finishImport(manifest);
     }
 
-    case 'from-image':
-      console.error(`petgen from-image: not built yet — see the plan, Phase 4.`);
-      return 1;
+    case 'from-image': {
+      const input = rest[0];
+      if (!input) {
+        console.error('petgen from-image: needs a picture, e.g. petgen from-image pet.png -o packs/x');
+        return 1;
+      }
+      const manifest = await fromImage({
+        input: userPath(input),
+        outDir: requireOut(args, command),
+        tolerance: args.get('tolerance') !== undefined ? Number(args.get('tolerance')) : undefined,
+        keepBg: args.has('keep-bg'),
+        ...meta(args),
+      });
+      return finishImport(manifest);
+    }
 
     default:
       console.error(`petgen: unknown command "${command}"\n\n${USAGE}`);

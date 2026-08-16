@@ -157,6 +157,9 @@ Three importers, by what you have:
 | A sprite sheet on a grid | `petgen from-sheet sheet.png --grid 32x32 --anim walk=0-3@8 --anim idle=4,5@2 -o packs/x` |
 | A folder of frame PNGs (`walk_0.png`, `walk_1.png`…) | `petgen from-frames ./frames -o packs/x` |
 | Animated GIFs/WebPs, one per animation | `petgen from-gif walk.gif idle.gif -o packs/x` |
+| **One picture** — a drawing, official art, anything | `petgen from-image pet.jpg -o packs/x` |
+
+`from-image` needs no frames at all: the background is removed automatically (flood fill from the corners, so interior whites survive) and a procedural rig makes the single image walk — squash-and-stretch about its feet, a bob locked to distance travelled, a lean into the direction of travel. Deliberately not AI frame generation: deformation can look stiff, but it can never flicker into a different character.
 
 Every import ends by running `petgen doctor` on the result and telling you how to preview it. The importers derive the ground anchor from the art (where the feet are), keep the frames registered so walk bobs survive, detect pixel art and undo clean upscales, and read GIF timing from the file itself. What your art needs to look like — transparent background, facing right, feet uncropped — is documented in [`docs/pet-art.md`](docs/pet-art.md).
 
@@ -173,9 +176,9 @@ The pet the app uses is chosen by `pack` in `%APPDATA%\blerb-desktop\settings.js
 
 Built and working: the simulation core, the pack format, the canvas renderer, the preview harness, and the Electron overlay — walking, falling, dragging, climbing, hanging upside down, and full multi-monitor roaming.
 
-Also built: the sprite importers (`petgen from-sheet`, `from-frames`, `from-gif`) and `petgen doctor`.
+Also built: the sprite importers (`petgen from-sheet`, `from-frames`, `from-gif`, `from-image` with its procedural gait) and `petgen doctor`.
 
-Not built yet: `petgen from-image` (one static image + procedural gait), and the whole game layer (sessions, retrospective XP, app classification, breaks). The design for those is settled and deliberately evidence-led — including a decision *not* to infer focus or attention, because the best published detector is ~75% accurate and its characteristic failure is firing hardest at someone quietly concentrating.
+Not built yet: the whole game layer (sessions, retrospective XP, app classification, breaks). The design for those is settled and deliberately evidence-led — including a decision *not* to infer focus or attention, because the best published detector is ~75% accurate and its characteristic failure is firing hardest at someone quietly concentrating.
 
 Known rough edges:
 
