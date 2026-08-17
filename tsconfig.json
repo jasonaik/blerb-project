@@ -4,6 +4,7 @@
     { "path": "./packages/pack" },
     { "path": "./packages/core" },
     { "path": "./packages/render-canvas" },
+    { "path": "./packages/game" },
     { "path": "./packages/petgen" }
   ]
 }

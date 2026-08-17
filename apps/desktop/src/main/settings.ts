@@ -13,14 +13,31 @@ export const DEFAULTS: Settings = {
   smoothTracking: true,
   petScale: 2,
   pack: 'blob',
+  classification: { focus: [], elsewhere: [] },
 };
 
 const file = () => join(app.getPath('userData'), 'settings.json');
 
+/**
+ * classification is hand-edited JSON for now, so wrong types are the EXPECTED
+ * input: a string where an array belongs, null, a stray number in the list.
+ * Anything that isn't a string array degrades to the empty list rather than
+ * throwing once a second inside the observer's poll.
+ */
+const strList = (x: unknown): string[] =>
+  Array.isArray(x) ? x.filter((s): s is string => typeof s === 'string') : [];
+
+export function sanitizeClassification(x: unknown): Settings['classification'] {
+  const c = (x ?? {}) as Record<string, unknown>;
+  return { focus: strList(c['focus']), elsewhere: strList(c['elsewhere']) };
+}
+
 export function loadSettings(): Settings {
   try {
     const raw = JSON.parse(readFileSync(file(), 'utf8')) as Partial<Settings>;
-    return { ...DEFAULTS, ...raw };
+    const s = { ...DEFAULTS, ...raw };
+    s.classification = sanitizeClassification(raw.classification ?? DEFAULTS.classification);
+    return s;
   } catch {
     return { ...DEFAULTS };
   }

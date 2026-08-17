@@ -25,6 +25,13 @@ export interface Settings {
   petScale: number;
   /** Pack directory name under packs/. */
   pack: string;
+  /**
+   * User-owned app lists by process basename (case-insensitive, .exe
+   * optional). `elsewhere` ships EMPTY on purpose — nothing is pre-labelled
+   * as bad. Unlisted apps are neutral. Hand-edit settings.json for now; a UI
+   * comes with the game layer.
+   */
+  classification: { focus: string[]; elsewhere: string[] };
 }
 
 export interface OverlayInit {

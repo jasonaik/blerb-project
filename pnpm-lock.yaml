@@ -33,6 +33,9 @@ importers:
       '@blerb/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@blerb/game':
+        specifier: workspace:*
+        version: link:../../packages/game
       '@blerb/pack':
         specifier: workspace:*
         version: link:../../packages/pack
@@ -58,6 +61,8 @@ importers:
       tsup:
         specifier: ^8.3.5
         version: 8.5.1(postcss@8.5.25)(tsx@4.23.8)(typescript@5.9.3)
+
+  packages/game: {}
 
   packages/pack:
     dependencies:

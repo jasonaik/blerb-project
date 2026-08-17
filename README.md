@@ -176,9 +176,9 @@ The pet the app uses is chosen by `pack` in `%APPDATA%\blerb-desktop\settings.js
 
 Built and working: the simulation core, the pack format, the canvas renderer, the preview harness, and the Electron overlay — walking, falling, dragging, climbing, hanging upside down, and full multi-monitor roaming.
 
-Also built: the sprite importers (`petgen from-sheet`, `from-frames`, `from-gif`, `from-image` with its procedural gait) and `petgen doctor`.
+Also built: the sprite importers (`petgen from-sheet`, `from-frames`, `from-gif`, `from-image` with its procedural gait), `petgen doctor`, and the observation layer — session segmentation over the only two signals the app will ever read (foreground process basename and one coarse idle threshold). It observes and logs; nothing persists yet, and the pet doesn't react yet.
 
-Not built yet: the whole game layer (sessions, retrospective XP, app classification, breaks). The design for those is settled and deliberately evidence-led — including a decision *not* to infer focus or attention, because the best published detector is ~75% accurate and its characteristic failure is firing hardest at someone quietly concentrating.
+Not built yet: the rest of the game layer (retrospective XP, the summary, breaks, pet reactions). The design for those is settled and deliberately evidence-led — including a decision *not* to infer focus or attention, because the best published detector is ~75% accurate and its characteristic failure is firing hardest at someone quietly concentrating.
 
 Known rough edges:
 

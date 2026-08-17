@@ -8,6 +8,7 @@
     "types": ["node"],
     "paths": {
       "@blerb/core": ["../../packages/core/src/index.ts"],
+      "@blerb/game": ["../../packages/game/src/index.ts"],
       "@blerb/pack": ["../../packages/pack/src/index.ts"],
       "@blerb/render-canvas": ["../../packages/render-canvas/src/index.ts"]
     }

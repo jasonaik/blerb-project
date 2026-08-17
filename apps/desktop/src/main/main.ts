@@ -5,7 +5,8 @@ import { join, resolve, sep } from 'node:path';
 import { frameBounds } from '@blerb/render-canvas';
 import { deriveFrame, type PetSnapshot, type PetState, type World } from '@blerb/core';
 import { CH, type OverlayCommand, type Settings } from '../shared/ipc';
-import { loadSettings, saveSettings } from './settings';
+import { loadSettings, sanitizeClassification, saveSettings } from './settings';
+import { startObserver, type Observer } from './observer';
 import { createScanner, fallbackWorld, type Scanner } from './scanner';
 import { createOverlayWindow, createSettingsWindow } from './windows';
 import { createPetHost, loadPackSync, type PetHost } from './pet';
@@ -31,6 +32,7 @@ const packsRoot = join(repoRoot, 'packs');
 let settings = loadSettings();
 let pet: PetHost | null = null;
 let scanner: Scanner | null = null;
+let observer: Observer | null = null;
 let settingsWin: BrowserWindow | null = null;
 let tray: Tray | null = null;
 
@@ -126,6 +128,9 @@ function pushVisibility(): void {
 
 function applySettings(patch: Partial<Settings>): Settings {
   settings = { ...settings, ...patch };
+  // Same hole as loadSettings: a malformed IPC patch must neither crash the
+  // observer nor persist a bad shape for the next launch.
+  if ('classification' in patch) settings.classification = sanitizeClassification(patch.classification);
   saveSettings(settings);
 
   if ('petVisible' in patch) pushVisibility();
@@ -134,6 +139,7 @@ function applySettings(patch: Partial<Settings>): Settings {
   }
   if ('launchAtLogin' in patch) app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin });
   if ('smoothTracking' in patch) scanner?.setSmoothTracking(settings.smoothTracking);
+  if ('classification' in patch) observer?.setClassification(settings.classification);
 
   broadcast(CH.settingsChanged, settings);
   settingsWin?.webContents.send(CH.settingsChanged, settings);
@@ -343,6 +349,7 @@ function quit(): void {
   saveSnapshot();
   pet?.stop();
   scanner?.stop();
+  observer?.stop();
   tray?.destroy();
   app.quit();
 }
@@ -403,6 +410,8 @@ void app.whenReady().then(() => {
   scanner.setSmoothTracking(settings.smoothTracking);
   scanner.start(300);
   pet.start();
+  // Phase 5: observe and log only. Nothing persists, nothing reacts yet.
+  observer = startObserver(settings.classification);
 
   setInterval(saveSnapshot, 10_000);
 

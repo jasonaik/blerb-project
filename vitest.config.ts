@@ -10,6 +10,7 @@ export default defineConfig({
     alias: {
       '@blerb/pack': src('pack'),
       '@blerb/core': src('core'),
+      '@blerb/game': src('game'),
       '@blerb/render-canvas': src('render-canvas'),
     },
   },

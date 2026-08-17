@@ -14,6 +14,7 @@
   },
   "devDependencies": {
     "@blerb/core": "workspace:*",
+    "@blerb/game": "workspace:*",
     "@blerb/pack": "workspace:*",
     "@blerb/render-canvas": "workspace:*",
     "electron": "^37.0.0",

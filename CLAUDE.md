@@ -104,7 +104,7 @@ packages/
   core/          @blerb/core          pet simulation. PURE.
   pack/          @blerb/pack          pet pack schema + loader
   render-canvas/ @blerb/render-canvas the ONLY renderer
-  game/          @blerb/game          sessions, XP, classification. PURE.   [Phase 5+]
+  game/          @blerb/game          sessions, XP, classification. PURE.   [sessions built]
   petgen/        @blerb/petgen        sprite-import CLI + preview harness
 apps/
   desktop/       blerb-desktop        Electron                              [Phase 2]
@@ -204,6 +204,8 @@ The gait lives in `packages/core/src/gait.ts` as a pure deformation applied insi
 
 - Foreground process basename (`GetForegroundWindow` + `GetWindowThreadProcessId`), already polled at 300ms for the platform physics.
 - Coarse idle (`GetLastInputInfo`), one threshold, default 60s. No hook, no keystroke content, no rate analysis.
+
+Phase 5 built the observation half: `@blerb/game` is a pure reducer over `{t, app, idleMs}` samples (`packages/game/src/session.ts`). A session = a focus-bucket foreground stretch; it ends on a **sustained ≥60s** switch to another bucket, or an **idle gap ≥90s** — and idle *between* those thresholds at a focus app ends nothing, which is the deliberate answer to idle-signals-can't-tell-reading-from-absence: when in doubt, keep the session open. Sessions close retroactively at the moment focus was actually lost, taps under a minute vanish, and `GameState` holds **no app names at all** — buckets and numbers only, enforced by a test. The desktop adapter (`observer.ts`) samples 1/s, discards the process path inside `win32.foregroundApp`, logs transitions under `BLERB_DEBUG`, and persists nothing — persistence is Phase 7. Classification lists live in settings.json (`classification.focus` / `.elsewhere`, basenames, hand-edited for now; `elsewhere` ships empty).
 
 **There is no focus, attention, or flow inference, and this was a deliberate cut.** Reasons, so a future session doesn't helpfully add it back:
 
