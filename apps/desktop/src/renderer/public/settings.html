@@ -26,6 +26,10 @@
       .row .hint { display: block; color: var(--dim); font-size: 11px; }
       input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
       input[type="range"] { width: 120px; accent-color: var(--accent); }
+      select {
+        background: var(--card); color: var(--ink); border: 1px solid var(--line);
+        border-radius: 7px; padding: 4px 8px; font: inherit; max-width: 160px;
+      }
       .val { color: var(--dim); font-variant-numeric: tabular-nums; width: 26px; text-align: right; }
       .foot { display: flex; justify-content: space-between; align-items: center; margin-top: 16px; }
       .foot .pack { color: var(--dim); font-size: 12px; }
@@ -59,6 +63,12 @@
 
     <div class="card">
       <div class="row">
+        <label for="pack">Pet
+          <span class="hint">Anything in the packs folder. Import your own with petgen — see the README.</span>
+        </label>
+        <select id="pack"></select>
+      </div>
+      <div class="row">
         <label for="petScale">Pet size</label>
         <input type="range" id="petScale" min="1" max="4" step="1" />
         <span class="val" id="petScaleVal">2×</span>
@@ -90,7 +100,7 @@
     </div>
 
     <div class="foot">
-      <span class="pack" id="packName">pack: —</span>
+      <span class="pack"></span>
       <button id="quit">Quit blerb</button>
     </div>
 
@@ -102,11 +112,18 @@
         for (const k of bools) $(k).checked = s[k];
         $('petScale').value = s.petScale;
         $('petScaleVal').textContent = s.petScale + '×';
-        $('packName').textContent = 'pack: ' + s.pack;
+        if ([...$('pack').options].some((o) => o.value === s.pack)) $('pack').value = s.pack;
       }
 
-      window.blerbSettings.get().then(render);
+      // The pack list first, so render() can select the current one.
+      window.blerbSettings.packs().then((packs) => {
+        $('pack').replaceChildren(
+          ...packs.map((p) => Object.assign(document.createElement('option'), { value: p.id, textContent: p.name })),
+        );
+        return window.blerbSettings.get().then(render);
+      });
       window.blerbSettings.onChange(render);
+      $('pack').addEventListener('change', (e) => window.blerbSettings.set({ pack: e.target.value }));
 
       for (const k of bools) {
         $(k).addEventListener('change', (e) => window.blerbSettings.set({ [k]: e.target.checked }));

@@ -65,5 +65,6 @@ export const CH = {
   settingsChanged: 'settings:changed',
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',
+  packsList: 'packs:list',
   appQuit: 'app:quit',
 } as const;

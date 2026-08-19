@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, screen, Tray, type Display } from 'electron';
 import { readFile } from 'node:fs/promises';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { frameBounds } from '@blerb/render-canvas';
 import { deriveFrame, type PetSnapshot, type PetState, type World } from '@blerb/core';
@@ -47,6 +47,90 @@ let quitting = false;
 
 const effectiveProtection = () => settings.captureProtection && !process.env.BLERB_ALLOW_CAPTURE;
 const snapshotFile = () => join(app.getPath('userData'), 'pet-snapshot.json');
+
+// ------------------------------------------------------------------ the pet
+
+/** Every directory under packs/ with a pet.json — what the pack picker offers. */
+function listPacks(): { id: string; name: string }[] {
+  try {
+    return readdirSync(packsRoot, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && existsSync(join(packsRoot, d.name, 'pet.json')))
+      .map((d) => {
+        try {
+          const m = JSON.parse(readFileSync(join(packsRoot, d.name, 'pet.json'), 'utf8')) as { name?: unknown };
+          return { id: d.name, name: typeof m.name === 'string' ? m.name : d.name };
+        } catch {
+          return { id: d.name, name: d.name };
+        }
+      });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Build (or rebuild) the pet from settings.pack. The sim closes over its
+ * pack, so switching pets means a new host — carrying the old position and
+ * pose through the snapshot so the new pet appears where the old one stood
+ * instead of respawning across the screen.
+ */
+function loadPetHost(snapshot?: PetSnapshot): PetHost {
+  const pack = loadPackSync(join(packsRoot, settings.pack));
+  // The pack ships with climbing on; the settings are the user's override.
+  pack.behavior.can.climb = settings.climbing;
+  pack.behavior.can.hang = settings.hanging;
+  // Diagnostic: climb at every wall instead of ~45% of the time, so the
+  // multi-monitor path can be exercised without waiting on dice.
+  if (process.env.BLERB_CLIMBY) pack.behavior.climbiness = 1;
+
+  const host = createPetHost(pack, lastWorld ?? fallbackWorld(), snapshot);
+  host.onState((s: PetState) => broadcast(CH.petState, s));
+
+  if (process.env.BLERB_DEBUG) {
+    let prev = '';
+    host.onState((s) => {
+      const where = [...overlays.values()].find(
+        (o) =>
+          s.x >= o.display.bounds.x &&
+          s.x < o.display.bounds.x + o.display.bounds.width &&
+          s.y >= o.display.bounds.y &&
+          s.y < o.display.bounds.y + o.display.bounds.height,
+      );
+      const line = `${s.behavior} on=${s.standingOn ?? s.climbingOn ?? s.hangingOn ?? 'air'} screen=${where?.display.id ?? '?'}`;
+      if (line !== prev) {
+        prev = line;
+        console.log(`[pet] ${line} @ ${Math.round(s.x)},${Math.round(s.y)}`);
+      }
+    });
+  }
+  return host;
+}
+
+/**
+ * Swap the running pet for settings.pack. On a broken pack (hand-imported,
+ * failed doctor) the old pet stays and the setting reverts — a bad pick from
+ * the picker must never kill the app.
+ */
+function switchPack(prevPack: string): void {
+  const snap = pet?.sim.serialize();
+  try {
+    const next = loadPetHost(snap);
+    pet?.stop();
+    pet = next;
+    pet.start();
+  } catch (err) {
+    console.error(`[blerb] pack "${settings.pack}" failed to load — keeping "${prevPack}":`, err);
+    settings = { ...settings, pack: prevPack };
+    saveSettings(settings);
+    return;
+  }
+  // Overlays reload the sprite art from the new packDir; the tray wears the
+  // new face.
+  for (const { win, display } of overlays.values()) {
+    if (!win.isDestroyed()) win.webContents.send(CH.overlayInit, initPayload(display));
+  }
+  tray?.setImage(trayIcon());
+}
 
 // ------------------------------------------------------------------ overlays
 
@@ -127,12 +211,21 @@ function pushVisibility(): void {
 // ------------------------------------------------------------------ settings
 
 function applySettings(patch: Partial<Settings>): Settings {
+  const prevPack = settings.pack;
   settings = { ...settings, ...patch };
   // Same hole as loadSettings: a malformed IPC patch must neither crash the
   // observer nor persist a bad shape for the next launch.
   if ('classification' in patch) settings.classification = sanitizeClassification(patch.classification);
   saveSettings(settings);
 
+  if ('pack' in patch && settings.pack !== prevPack) switchPack(prevPack);
+  if (('climbing' in patch || 'hanging' in patch) && pet) {
+    // The sim reads these live on every behavior decision — write through to
+    // the resolved pack so the toggles work without a restart.
+    pet.pack.behavior.can.climb = settings.climbing;
+    pet.pack.behavior.can.hang = settings.hanging;
+    pet.wake();
+  }
   if ('petVisible' in patch) pushVisibility();
   if ('captureProtection' in patch) {
     for (const { win } of overlays.values()) win.setContentProtection(effectiveProtection());
@@ -152,6 +245,15 @@ function applySettings(patch: Partial<Settings>): Settings {
 
 function trayTemplate(): Electron.MenuItemConstructorOptions[] {
   return [
+    {
+      label: 'Pet',
+      submenu: listPacks().map((p) => ({
+        label: p.name,
+        type: 'radio' as const,
+        checked: p.id === settings.pack,
+        click: () => applySettings({ pack: p.id }),
+      })),
+    },
     { label: 'Pet visible', type: 'checkbox', checked: settings.petVisible, click: (i) => applySettings({ petVisible: i.checked }) },
     { label: 'Invisible in screen capture', type: 'checkbox', checked: settings.captureProtection, click: (i) => applySettings({ captureProtection: i.checked }) },
     { label: 'Can climb walls', type: 'checkbox', checked: settings.climbing, click: (i) => applySettings({ climbing: i.checked }) },
@@ -198,12 +300,17 @@ function setTerrarium(id: string | null): void {
   pet?.wake();
 }
 
+/** The pet's face, cropped from its atlas's first cell. */
+function trayIcon(): Electron.NativeImage {
+  const img = nativeImage.createFromPath(join(packsRoot, settings.pack, 'atlas.png'));
+  const { width, height } = img.getSize();
+  // Crop a first-cell-ish square that works for any atlas geometry.
+  const side = Math.max(16, Math.min(64, Math.min(width, height)));
+  return img.crop({ x: 0, y: 0, width: side, height: side }).resize({ width: 16, height: 16 });
+}
+
 function createTray(): void {
-  const icon = nativeImage
-    .createFromPath(join(packsRoot, settings.pack, 'atlas.png'))
-    .crop({ x: 0, y: 0, width: 32, height: 32 })
-    .resize({ width: 16, height: 16 });
-  tray = new Tray(icon);
+  tray = new Tray(trayIcon());
   tray.setToolTip('blerb');
   rebuildTrayMenu();
   tray.on('double-click', openSettings);
@@ -339,6 +446,7 @@ function registerIpc(): void {
   ipcMain.on(CH.overlayMenu, () => Menu.buildFromTemplate(petMenuTemplate()).popup());
   ipcMain.handle(CH.settingsGet, () => settings);
   ipcMain.handle(CH.settingsSet, (_e, patch: Partial<Settings>) => applySettings(patch));
+  ipcMain.handle(CH.packsList, () => listPacks());
   ipcMain.on(CH.appQuit, quit);
 }
 
@@ -357,15 +465,6 @@ function quit(): void {
 void app.whenReady().then(() => {
   registerIpc();
 
-  const packDir = join(packsRoot, settings.pack);
-  const pack = loadPackSync(packDir);
-  // The pack ships with climbing on; the setting is the user's override.
-  pack.behavior.can.climb = settings.climbing;
-  pack.behavior.can.hang = settings.hanging;
-  // Diagnostic: climb at every wall instead of ~45% of the time, so the
-  // multi-monitor path can be exercised without waiting on dice.
-  if (process.env.BLERB_CLIMBY) pack.behavior.climbiness = 1;
-
   scanner = createScanner({
     onWorld: (world) => {
       lastWorld = world;
@@ -381,28 +480,8 @@ void app.whenReady().then(() => {
     },
   });
 
-  const world = fallbackWorld();
-  lastWorld = world;
-  pet = createPetHost(pack, world, loadSnapshot());
-  pet.onState((s: PetState) => broadcast(CH.petState, s));
-
-  if (process.env.BLERB_DEBUG) {
-    let prev = '';
-    pet.onState((s) => {
-      const where = [...overlays.values()].find(
-        (o) =>
-          s.x >= o.display.bounds.x &&
-          s.x < o.display.bounds.x + o.display.bounds.width &&
-          s.y >= o.display.bounds.y &&
-          s.y < o.display.bounds.y + o.display.bounds.height,
-      );
-      const line = `${s.behavior} on=${s.standingOn ?? s.climbingOn ?? s.hangingOn ?? 'air'} screen=${where?.display.id ?? '?'}`;
-      if (line !== prev) {
-        prev = line;
-        console.log(`[pet] ${line} @ ${Math.round(s.x)},${Math.round(s.y)}`);
-      }
-    });
-  }
+  lastWorld = fallbackWorld();
+  pet = loadPetHost(loadSnapshot());
 
   spawnOverlays();
   createTray();

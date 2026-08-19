@@ -4,12 +4,29 @@
  * decoding a single real image.
  */
 
+import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import sharp from 'sharp';
 import type { Raster } from './raster.js';
 
+/**
+ * A missing input is the most common way to hold this tool wrong, and
+ * sharp's own message doesn't explain the part people actually trip over:
+ * where the relative path was resolved from.
+ */
+function mustExist(file: string): void {
+  if (existsSync(file)) return;
+  throw new Error(
+    `input not found: ${file}\n` +
+      `  A relative path resolves from the folder you ran the command in — ` +
+      `pass the full path to your file (e.g. "C:\\Users\\you\\Downloads\\walk.gif"), ` +
+      `or cd into its folder first.`,
+  );
+}
+
 export async function loadRaster(file: string): Promise<Raster> {
+  mustExist(file);
   const { data, info } = await sharp(file).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   return { w: info.width, h: info.height, data: new Uint8Array(data) };
 }
@@ -28,6 +45,7 @@ export interface AnimatedImage {
  * complete canvas — no compositing needed here.
  */
 export async function loadAnimated(file: string): Promise<AnimatedImage> {
+  mustExist(file);
   const img = sharp(file, { animated: true, pages: -1 });
   const meta = await img.metadata();
   const pages = meta.pages ?? 1;

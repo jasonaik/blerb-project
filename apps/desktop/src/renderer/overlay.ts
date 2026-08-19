@@ -40,13 +40,22 @@ async function main(): Promise<void> {
     }
   };
 
-  const pack: ResolvedPack = await loadPack(fetcher, `${init.packDir}/pet.json`);
-  const atlasBytes = await window.blerb.read(pack.atlasUrl);
-  const atlas = await createImageBitmap(new Blob([atlasBytes as BlobPart]));
-
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('no 2d context');
-  const renderer = new CanvasRenderer({ ctx: ctx as unknown as Ctx2D, pack, atlas, dpr: devicePixelRatio || 1 });
+
+  // Mutable on purpose: switching pets swaps all three at runtime.
+  let packDir = init.packDir;
+  let pack!: ResolvedPack;
+  let renderer!: CanvasRenderer;
+
+  async function loadArt(dir: string): Promise<void> {
+    const p = await loadPack(fetcher, `${dir}/pet.json`);
+    const atlasBytes = await window.blerb.read(p.atlasUrl);
+    const atlas = await createImageBitmap(new Blob([atlasBytes as BlobPart]));
+    pack = p;
+    renderer = new CanvasRenderer({ ctx: ctx as unknown as Ctx2D, pack: p, atlas, dpr: devicePixelRatio || 1 });
+  }
+  await loadArt(packDir);
 
   let world: World = init.world;
   let debug = init.settings.debugOverlay;
@@ -117,12 +126,27 @@ async function main(): Promise<void> {
     };
   }
 
+  let artSeq = 0;
   window.blerb.onInit((next) => {
-    // Sent when displays are rearranged: this window may now be a different
-    // monitor, so its origin changes.
+    // Sent when displays are rearranged (this window may now be a different
+    // monitor, so its origin changes) — or when the PET changed, in which
+    // case the sprite art has to be reloaded before painting.
     init = next;
     origin = next.origin;
     world = next.world;
+    if (next.packDir !== packDir) {
+      packDir = next.packDir;
+      const seq = ++artSeq;
+      void loadArt(next.packDir)
+        .then(() => {
+          if (seq !== artSeq) return; // superseded by a newer switch
+          prevRect = null;
+          renderer.clear(innerWidth, innerHeight);
+          paint();
+        })
+        .catch((err) => console.error('[blerb overlay] pack reload failed:', err));
+      return;
+    }
     prevRect = null;
     renderer.clear(innerWidth, innerHeight);
     paint();

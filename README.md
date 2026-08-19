@@ -42,6 +42,7 @@ Open it from the **tray icon → Settings…**, by **double-clicking the tray ic
 
 | Setting | Default | What it does |
 |---|---|---|
+| Pet | blob | Which pet. The dropdown lists every pack in the `packs/` folder — switching is instant, and the new pet appears where the old one stood. Also in the tray and right-click menus. |
 | Pet visible | on | Hides the pet without quitting. It stops moving entirely while hidden. |
 | Invisible in screen capture | **on** | Sets `WDA_EXCLUDEFROMCAPTURE`. Windows itself keeps the pet out of screen shares and recordings while leaving it visible to you. |
 | Start with Windows | off | Standard login item. |
@@ -163,7 +164,13 @@ Three importers, by what you have:
 
 Every import ends by running `petgen doctor` on the result and telling you how to preview it. The importers derive the ground anchor from the art (where the feet are), keep the frames registered so walk bobs survive, detect pixel art and undo clean upscales, and read GIF timing from the file itself. What your art needs to look like — transparent background, facing right, feet uncropped — is documented in [`docs/pet-art.md`](docs/pet-art.md).
 
-The pet the app uses is chosen by `pack` in `%APPDATA%\blerb-desktop\settings.json` — set it to your imported pack's directory name. `petgen from-image` (one static image, procedural gait) is designed but not built yet.
+Imported packs appear in the settings window's **Pet** dropdown (and the tray menu) the next time you open it — pick one and the switch is instant.
+
+A gotcha worth knowing: relative paths like `walk.gif` resolve from the folder you run the command in. If your art lives elsewhere, pass full paths:
+
+```bash
+pnpm petgen from-gif "C:\Users\you\Downloads\walk.gif" "C:\Users\you\Downloads\idle.gif" -o packs/quagsire
+```
 
 ## Privacy
 
