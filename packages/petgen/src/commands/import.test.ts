@@ -393,6 +393,43 @@ describe('from-gif', () => {
     expect(manifest.animations['walk']).toEqual({ frames: [0, 1, 2], fps: 10 });
   });
 
+  it('carries animNames, speeds and aliases into the manifest', async () => {
+    // Filenames deliberately NOT animation names — animNames must win, which
+    // is what the GUI importer and the pokemon batch script depend on.
+    const frames = [0, 1].map((i) => {
+      const r = makeRaster(20, 20);
+      rect(r, 2 + i * 5, 10, 8 + i * 5, 19);
+      return r;
+    });
+    const fileA = join(tmp, 'default_a_8fps.webp');
+    const fileB = join(tmp, 'default_b_8fps.webp');
+    await writeAnimated(fileA, frames, [100, 100], 'webp');
+    await writeAnimated(fileB, [frames[1]!, frames[0]!], [100, 100], 'webp');
+
+    const out = join(tmp, 'named-pet');
+    await fromGif({
+      inputs: [fileA, fileB],
+      animNames: ['walk', 'idle'],
+      speeds: { walk: 27 },
+      aliases: { climb: 'walk', hang: 'walk' },
+      outDir: out,
+    });
+
+    const manifest = (await readManifest(out)) as EmittedManifest & {
+      animations: Record<string, { frames: number[]; fps: number; designSpeed?: number }>;
+      aliases?: Record<string, string>;
+    };
+    expect(Object.keys(manifest.animations).sort()).toEqual(['idle', 'walk']);
+    expect(manifest.animations['walk']!.designSpeed).toBe(27);
+    expect(manifest.animations['idle']!.designSpeed).toBeUndefined();
+    expect(manifest.aliases).toEqual({ climb: 'walk', hang: 'walk' });
+
+    // The alias resolves through the real pack machinery, not just the JSON.
+    const raw = JSON.parse(await readFile(join(out, 'pet.json'), 'utf8'));
+    const pack = resolvePack(raw);
+    expect(pack.animation('climb')).toBe(pack.animation('walk'));
+  });
+
   it('preserves held poses: a frame with 3x the modal delay plays three times', async () => {
     const frames = [0, 1, 2].map((i) => {
       const r = makeRaster(20, 20);

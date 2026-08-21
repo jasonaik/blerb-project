@@ -32,6 +32,7 @@ Diagnostic env vars:
 | `BLERB_CLIMBY=1` | climb at every wall instead of ~45% of the time — exercises the multi-monitor path without waiting on dice |
 | `BLERB_SOFTWARE=1` | disable GPU compositing |
 | `BLERB_ALLOW_CAPTURE=1` | let screen capture see the pet, so it can be verified in a screenshot |
+| `BLERB_IMPORT=a.gif;b.gif` (+`BLERB_IMPORT_NAME=x`) | run the GUI import path headlessly at startup — how the packaged sharp pipeline gets machine-verified |
 
 The preview aliases `@blerb/*` to their **sources**, so edits to the sim are live without a build step. This is the inner loop — use it.
 
@@ -41,11 +42,22 @@ pnpm typecheck     # tsc --build, then every package's and app's own typecheck
 pnpm lint          # includes the pure-packages rule, see §4
 pnpm build         # tsc --build. Packages emit ESM + .d.ts to dist/
 pnpm blob          # regenerate packs/blob/atlas.png from its generator
+pnpm dist          # Windows installer → apps/desktop/release/blerb-setup-*.exe
+pnpm pokemon <dir> # batch-import HGSS follower sprites from a LOCAL clone of
+                   # jakobhoeg/vscode-pokemon (--shiny --gens --only --out --force)
 ```
 
 **Never write `--filter './packages/**'` in a root script.** pnpm scripts run through `cmd.exe`, which does not strip single quotes, so the filter arrives with the quotes attached and matches **nothing** — silently, with exit code 0. Use double quotes. This shipped broken once and `pnpm build` was a no-op for two phases; the app only worked because `tsc --build` happened to emit the same files.
 
 `README.md` is the version of this section written for a human who just wants to run the thing.
+
+**Packaging facts** (learned by building it, 2026-08-21):
+
+- **Pack roots.** Dev: the repo's `packs/`, one read-write root. Packaged: `resources/packs` (bundled, blob ONLY — §13) + `%APPDATA%\blerb-desktop\packs` (user-writable, where GUI imports land), searched user-first so a user pack shadows a bundled id. `packDirFor(id)` in main.ts is the single resolver; `fsRead` is fenced to the roots. If `settings.pack` names a pack that isn't on disk (dev pack seen by the installed app, or deleted), startup falls back to blob and saves — `switchPack` guards runtime picks, this guards launch.
+- Dev and installed share userData **and therefore the single-instance lock** — you cannot run both at once; the second becomes an "open settings" signal to the first.
+- electron-builder 26 handles the pnpm workspace fine and needs **no** dependency patching. If it dies at load with `Cannot find module 'tslib'` from `@peculiar/utils` (its codesign path), the virtual store is half-linked — run a full `pnpm install` at the root. A filtered `pnpm add -D … --filter blerb-desktop` can leave the new transitive deps unlinked. (A `pnpm.packageExtensions` entry declaring tslib was tried and reverted: `@peculiar/utils` already declares it, so the extension was a no-op and the full install was the actual repair.)
+- sharp joined koffi as the second native runtime dep (GUI import). Both are tsup `external`, real `dependencies` of blerb-desktop, and `asarUnpack`ed (`node_modules/{koffi,sharp,@img}/**`) — .node files can't load from inside an asar. sharp is imported **lazily** in importer.ts so a broken sharp costs an import-error message, not startup. `npmRebuild: false` — both ship prebuilt N-API binaries.
+- The app icon (`build/icon.ico`) is generated from blob's first atlas cell by `apps/desktop/scripts/make-icon.mjs` — ICO written by hand (6-byte header + 16-byte entries + PNG blobs; Vista+ accepts PNG-compressed entries).
 
 ---
 
@@ -175,6 +187,10 @@ A complete, working pet (`packs/blob/pet.json`, minus its `aliases` block):
 | `preview <packDir>` | Phase 0 — built |
 | `from-sheet`, `from-frames`, `from-gif`, `doctor` | Phase 3 — built |
 | `from-image` (procedural gait rig) | Phase 4 — built |
+
+petgen is also a **library** (`src/index.ts`, exported via package.json `exports`): the desktop app's GUI importer (`apps/desktop/src/main/importer.ts`) and the pokemon batch script (`packages/petgen/scripts/import-vscode-pokemon.mts`) call `fromGif`/`fromImage` directly. `preview` is deliberately not exported there — it drags in vite. `fromGif` takes `animNames` (parallel to `inputs`, for files not named after their animations), `speeds` (per-animation designSpeed) and `aliases`; the CLI spells those `--speed walk=27` and `--alias climb=walk`.
+
+**Packs with only walk+idle still climb**: alias `climb`→`walk` and `hang`→`walk` and the renderer's ±90° rotation makes a side-view walk read as scaling the wall, Shimeji-style. `cling` is left to the idle fallback on purpose — a walk loop on a *stationary* pet treadmills. The batch importer and the GUI importer both apply this automatically; the missing-animation fallback alone would give you a front-facing idle rotated sideways instead.
 
 **Documented input requirements for imported art** (`docs/pet-art.md`, and `doctor` warnings): PNG with alpha · one character, no scene, no baked drop-shadow · facing right · feet at the bottom, uncropped · ≥2px transparent margin · 64–512px tall · pixel art at **native** resolution, not upscaled.
 
@@ -313,9 +329,9 @@ Walls carry a `side` (the direction from wall to pet). Climbing rotates the spri
 
 ## 13. IP
 
-`packs/quagsire/` is gitignored and **must never be committed or published**. The Pokémon Company explicitly asks people not to use their characters.
+Every pack directory except `packs/blob/` is gitignored (allowlist: `packs/*/` + `!packs/blob/`) and **must never be committed or published**. The Pokémon Company explicitly asks people not to use their characters.
 
-The shipped default is `packs/blob` — original art, CC0. The pack-import pipeline is what makes this clean: a Quagsire is something *you* import on your machine, not something the app distributes.
+The shipped default is `packs/blob` — original art, CC0. The pack-import pipeline is what makes this clean: a Quagsire is something *you* import on your machine, not something the app distributes. That includes the batch importer (`pnpm pokemon`): it reads a clone the **user** makes — no network code — and writes into the gitignored packs root. The installer bundles `packs/blob` alone via an explicit `extraResources` entry; verify `resources/packs` after any packaging change.
 
 ---
 

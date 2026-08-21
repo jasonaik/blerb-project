@@ -1,11 +1,12 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, screen, Tray, type Display } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, screen, Tray, type Display } from 'electron';
 import { readFile } from 'node:fs/promises';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { frameBounds } from '@blerb/render-canvas';
 import { deriveFrame, type PetSnapshot, type PetState, type World } from '@blerb/core';
 import { CH, type OverlayCommand, type Settings } from '../shared/ipc';
-import { loadSettings, sanitizeClassification, saveSettings } from './settings';
+import { DEFAULTS, loadSettings, sanitizeClassification, saveSettings, settingsFileExists } from './settings';
+import { importPet } from './importer';
 import { startObserver, type Observer } from './observer';
 import { createScanner, fallbackWorld, type Scanner } from './scanner';
 import { createOverlayWindow, createSettingsWindow } from './windows';
@@ -26,8 +27,30 @@ app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 if (process.env.BLERB_SOFTWARE) app.disableHardwareAcceleration();
 if (!app.requestSingleInstanceLock()) app.quit();
 
-const repoRoot = resolve(app.getAppPath(), '..', '..');
-const packsRoot = join(repoRoot, 'packs');
+/**
+ * Where packs live. Dev: the repo's packs/ (one root, read-write). Packaged:
+ * the read-only copies bundled under resources/ — which is ONLY blob; third-
+ * party art is never distributed — plus a user-writable packs/ in userData
+ * that the GUI importer writes to. Roots are searched in order, so a user
+ * pack shadows a bundled one with the same id.
+ */
+const bundledPacksRoot = app.isPackaged
+  ? join(process.resourcesPath, 'packs')
+  : join(resolve(app.getAppPath(), '..', '..'), 'packs');
+const userPacksRoot = app.isPackaged ? join(app.getPath('userData'), 'packs') : bundledPacksRoot;
+const packRoots = userPacksRoot === bundledPacksRoot ? [bundledPacksRoot] : [userPacksRoot, bundledPacksRoot];
+
+/** Absolute directory for a pack id — first root that has it, else where an import would put it. */
+function packDirFor(id: string): string {
+  for (const root of packRoots) {
+    if (existsSync(join(root, id, 'pet.json'))) return join(root, id);
+  }
+  return join(userPacksRoot, id);
+}
+
+/** Whether any root already carries this id — the importer must not reuse it. */
+const idTakenAnywhere = (id: string): boolean =>
+  packRoots.some((root) => existsSync(join(root, id, 'pet.json')));
 
 let settings = loadSettings();
 let pet: PetHost | null = null;
@@ -50,22 +73,40 @@ const snapshotFile = () => join(app.getPath('userData'), 'pet-snapshot.json');
 
 // ------------------------------------------------------------------ the pet
 
-/** Every directory under packs/ with a pet.json — what the pack picker offers. */
+/**
+ * Every pack directory across the roots — what the pack picker offers. First
+ * root wins on id clashes. Cached briefly: with a batch pokemon import in
+ * packs/ a full scan reads ~570 pet.jsons (~190ms measured), and this runs on
+ * every settings change — including each tick of the pet-size slider — on the
+ * same process as the sim. The TTL keeps a slider drag at one scan while a
+ * CLI import still shows up on the next human-timescale look.
+ */
+let packsCache: { at: number; list: { id: string; name: string }[] } | null = null;
+const PACKS_CACHE_MS = 2000;
+
 function listPacks(): { id: string; name: string }[] {
-  try {
-    return readdirSync(packsRoot, { withFileTypes: true })
-      .filter((d) => d.isDirectory() && existsSync(join(packsRoot, d.name, 'pet.json')))
-      .map((d) => {
-        try {
-          const m = JSON.parse(readFileSync(join(packsRoot, d.name, 'pet.json'), 'utf8')) as { name?: unknown };
-          return { id: d.name, name: typeof m.name === 'string' ? m.name : d.name };
-        } catch {
-          return { id: d.name, name: d.name };
-        }
-      });
-  } catch {
-    return [];
+  if (packsCache && Date.now() - packsCache.at < PACKS_CACHE_MS) return packsCache.list;
+  const seen = new Map<string, { id: string; name: string }>();
+  for (const root of packRoots) {
+    let entries;
+    try {
+      entries = readdirSync(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const d of entries) {
+      if (!d.isDirectory() || seen.has(d.name) || !existsSync(join(root, d.name, 'pet.json'))) continue;
+      try {
+        const m = JSON.parse(readFileSync(join(root, d.name, 'pet.json'), 'utf8')) as { name?: unknown };
+        seen.set(d.name, { id: d.name, name: typeof m.name === 'string' ? m.name : d.name });
+      } catch {
+        seen.set(d.name, { id: d.name, name: d.name });
+      }
+    }
   }
+  const list = [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
+  packsCache = { at: Date.now(), list };
+  return list;
 }
 
 /**
@@ -75,7 +116,7 @@ function listPacks(): { id: string; name: string }[] {
  * instead of respawning across the screen.
  */
 function loadPetHost(snapshot?: PetSnapshot): PetHost {
-  const pack = loadPackSync(join(packsRoot, settings.pack));
+  const pack = loadPackSync(packDirFor(settings.pack));
   // The pack ships with climbing on; the settings are the user's override.
   pack.behavior.can.climb = settings.climbing;
   pack.behavior.can.hang = settings.hanging;
@@ -177,7 +218,7 @@ function spawnOverlays(): void {
 
 function initPayload(display: Display) {
   return {
-    packDir: join(packsRoot, settings.pack).replace(/\\/g, '/'),
+    packDir: packDirFor(settings.pack).replace(/\\/g, '/'),
     origin: { x: display.bounds.x, y: display.bounds.y },
     world: lastWorld ?? fallbackWorld(),
     state: pet?.sim.state ?? null,
@@ -211,6 +252,14 @@ function pushVisibility(): void {
 // ------------------------------------------------------------------ settings
 
 function applySettings(patch: Partial<Settings>): Settings {
+  // The pack id is joined into filesystem paths (packDirFor); a slug is the
+  // only shape that can ever be legitimate, so anything else — separators,
+  // dots, empty — is dropped here rather than trusted from IPC.
+  if (patch.pack !== undefined && !/^[a-z0-9][a-z0-9_-]*$/i.test(patch.pack)) {
+    console.warn(`[blerb] ignoring invalid pack id ${JSON.stringify(patch.pack)}`);
+    patch = { ...patch };
+    delete patch.pack;
+  }
   const prevPack = settings.pack;
   settings = { ...settings, ...patch };
   // Same hole as loadSettings: a malformed IPC patch must neither crash the
@@ -243,17 +292,32 @@ function applySettings(patch: Partial<Settings>): Settings {
 
 // ---------------------------------------------------------------------- tray
 
+/**
+ * With a handful of packs the Pet submenu is a radio list; with hundreds
+ * (a batch pokemon import) a native menu is the wrong control entirely, so it
+ * degrades to "current pet + open Settings", where a real dropdown lives.
+ */
+function petSubmenu(): Electron.MenuItemConstructorOptions[] {
+  const packs = listPacks();
+  if (packs.length <= 24) {
+    return packs.map((p) => ({
+      label: p.name,
+      type: 'radio' as const,
+      checked: p.id === settings.pack,
+      click: () => applySettings({ pack: p.id }),
+    }));
+  }
+  const current = packs.find((p) => p.id === settings.pack);
+  return [
+    { label: current?.name ?? settings.pack, type: 'radio', checked: true, enabled: false },
+    { type: 'separator' },
+    { label: `All ${packs.length} pets…`, click: openSettings },
+  ];
+}
+
 function trayTemplate(): Electron.MenuItemConstructorOptions[] {
   return [
-    {
-      label: 'Pet',
-      submenu: listPacks().map((p) => ({
-        label: p.name,
-        type: 'radio' as const,
-        checked: p.id === settings.pack,
-        click: () => applySettings({ pack: p.id }),
-      })),
-    },
+    { label: 'Pet', submenu: petSubmenu() },
     { label: 'Pet visible', type: 'checkbox', checked: settings.petVisible, click: (i) => applySettings({ petVisible: i.checked }) },
     { label: 'Invisible in screen capture', type: 'checkbox', checked: settings.captureProtection, click: (i) => applySettings({ captureProtection: i.checked }) },
     { label: 'Can climb walls', type: 'checkbox', checked: settings.climbing, click: (i) => applySettings({ climbing: i.checked }) },
@@ -302,9 +366,18 @@ function setTerrarium(id: string | null): void {
 
 /** The pet's face, cropped from its atlas's first cell. */
 function trayIcon(): Electron.NativeImage {
-  const img = nativeImage.createFromPath(join(packsRoot, settings.pack, 'atlas.png'));
+  const img = nativeImage.createFromPath(join(packDirFor(settings.pack), 'atlas.png'));
   const { width, height } = img.getSize();
-  // Crop a first-cell-ish square that works for any atlas geometry.
+  // The REAL first cell when the resolved pack is at hand — a hi-res atlas
+  // (from-image art can be 400px a cell) has nothing but transparent margin
+  // in its top-left 64px, which renders as a blank tray icon.
+  const cell = pet?.pack.cells.values().next().value;
+  if (cell && cell.w <= width && cell.h <= height) {
+    return img
+      .crop({ x: cell.x, y: cell.y, width: cell.w, height: cell.h })
+      .resize({ width: 16, height: 16 });
+  }
+  // Fallback (pet not built yet): a first-cell-ish square.
   const side = Math.max(16, Math.min(64, Math.min(width, height)));
   return img.crop({ x: 0, y: 0, width: side, height: side }).resize({ width: 16, height: 16 });
 }
@@ -419,11 +492,13 @@ function registerIpc(): void {
     return initPayload(entry?.display ?? screen.getPrimaryDisplay());
   });
 
-  // Reads are restricted to packs/ — the renderer needs sprite assets and
-  // nothing else from disk.
+  // Reads are restricted to the pack roots — the renderer needs sprite assets
+  // and nothing else from disk.
   ipcMain.handle(CH.fsRead, async (_e, p: string) => {
     const rp = resolve(String(p));
-    if (!rp.startsWith(resolve(packsRoot) + sep)) throw new Error('read outside packs/ denied');
+    if (!packRoots.some((root) => rp.startsWith(resolve(root) + sep))) {
+      throw new Error('read outside packs/ denied');
+    }
     return readFile(rp);
   });
 
@@ -447,6 +522,25 @@ function registerIpc(): void {
   ipcMain.handle(CH.settingsGet, () => settings);
   ipcMain.handle(CH.settingsSet, (_e, patch: Partial<Settings>) => applySettings(patch));
   ipcMain.handle(CH.packsList, () => listPacks());
+  ipcMain.handle(CH.packsImport, async (_e, rawName?: string) => {
+    const dialogOpts = {
+      title: 'Choose pet art',
+      filters: [
+        { name: 'Pet art (GIF, WebP, PNG, JPG)', extensions: ['gif', 'webp', 'png', 'jpg', 'jpeg'] },
+      ],
+      properties: ['openFile' as const, 'multiSelections' as const],
+    };
+    const picked = settingsWin
+      ? await dialog.showOpenDialog(settingsWin, dialogOpts)
+      : await dialog.showOpenDialog(dialogOpts);
+    if (picked.canceled || picked.filePaths.length === 0) return { ok: false, canceled: true };
+    const result = await importPet(picked.filePaths, userPacksRoot, rawName, idTakenAnywhere);
+    // A freshly imported pet becomes THE pet — that is unmistakably "it
+    // worked", where a new entry in a 500-item dropdown is not.
+    packsCache = null;
+    if (result.ok && result.id) applySettings({ pack: result.id });
+    return result;
+  });
   ipcMain.on(CH.appQuit, quit);
 }
 
@@ -462,7 +556,13 @@ function quit(): void {
   app.quit();
 }
 
+// Double-clicking the exe while blerb is already running should open the GUI,
+// not silently do nothing — for an installed tray app that is the only
+// discoverable "where did it go".
+app.on('second-instance', () => openSettings());
+
 void app.whenReady().then(() => {
+  const firstRun = !settingsFileExists();
   registerIpc();
 
   scanner = createScanner({
@@ -481,7 +581,19 @@ void app.whenReady().then(() => {
   });
 
   lastWorld = fallbackWorld();
-  pet = loadPetHost(loadSnapshot());
+  // switchPack guards against a broken pack picked at runtime; this guards
+  // the one it can't — settings.pack naming a pack that no longer exists on
+  // disk. An installed app whose settings point at a deleted (or dev-only)
+  // pack must fall back to the bundled default, not die at startup.
+  try {
+    pet = loadPetHost(loadSnapshot());
+  } catch (err) {
+    if (settings.pack === DEFAULTS.pack) throw err; // blob itself broken — the install is bad
+    console.error(`[blerb] pack "${settings.pack}" failed to load — falling back to ${DEFAULTS.pack}:`, err);
+    settings = { ...settings, pack: DEFAULTS.pack };
+    saveSettings(settings);
+    pet = loadPetHost(loadSnapshot());
+  }
 
   spawnOverlays();
   createTray();
@@ -493,6 +605,28 @@ void app.whenReady().then(() => {
   observer = startObserver(settings.classification);
 
   setInterval(saveSnapshot, 10_000);
+
+  // First launch: show the settings window so the app visibly exists beyond
+  // a tray icon and a sprite on the taskbar.
+  if (firstRun) {
+    saveSettings(settings);
+    openSettings();
+  }
+
+  // Diagnostic: run the GUI import path headlessly (files ;-separated).
+  // BLERB_IMPORT="C:\a\walk.gif;C:\a\idle.gif" BLERB_IMPORT_NAME=x
+  if (process.env.BLERB_IMPORT) {
+    void importPet(
+      process.env.BLERB_IMPORT.split(';'),
+      userPacksRoot,
+      process.env.BLERB_IMPORT_NAME,
+      idTakenAnywhere,
+    ).then((r) => {
+      console.log('[blerb] BLERB_IMPORT:', JSON.stringify(r));
+      packsCache = null;
+      if (r.ok && r.id) applySettings({ pack: r.id });
+    });
+  }
 
   const relayout = () => spawnOverlays();
   screen.on('display-added', relayout);

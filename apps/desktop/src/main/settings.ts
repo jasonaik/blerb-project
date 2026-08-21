@@ -18,6 +18,16 @@ export const DEFAULTS: Settings = {
 
 const file = () => join(app.getPath('userData'), 'settings.json');
 
+/** Whether a settings file exists yet — false means this is the first run. */
+export function settingsFileExists(): boolean {
+  try {
+    readFileSync(file());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * classification is hand-edited JSON for now, so wrong types are the EXPECTED
  * input: a string where an array belongs, null, a stray number in the list.

@@ -30,6 +30,10 @@
         background: var(--card); color: var(--ink); border: 1px solid var(--line);
         border-radius: 7px; padding: 4px 8px; font: inherit; max-width: 160px;
       }
+      input[type="text"] {
+        background: var(--card); color: var(--ink); border: 1px solid var(--line);
+        border-radius: 7px; padding: 4px 8px; font: inherit; width: 110px;
+      }
       .val { color: var(--dim); font-variant-numeric: tabular-nums; width: 26px; text-align: right; }
       .foot { display: flex; justify-content: space-between; align-items: center; margin-top: 16px; }
       .foot .pack { color: var(--dim); font-size: 12px; }
@@ -64,9 +68,19 @@
     <div class="card">
       <div class="row">
         <label for="pack">Pet
-          <span class="hint">Anything in the packs folder. Import your own with petgen — see the README.</span>
+          <span class="hint">Anything in the packs folder — imports land here too.</span>
         </label>
         <select id="pack"></select>
+      </div>
+      <div class="row">
+        <label for="importBtn">Import your own art
+          <span class="hint">Animated GIFs (walk.gif, idle.gif…) or one picture, which learns to walk on its own.</span>
+        </label>
+        <input type="text" id="importName" placeholder="name (optional)" />
+        <button id="importBtn">Choose files…</button>
+      </div>
+      <div class="row" id="importStatusRow" hidden>
+        <span class="hint" id="importStatus"></span>
       </div>
       <div class="row">
         <label for="petScale">Pet size</label>
@@ -115,15 +129,41 @@
         if ([...$('pack').options].some((o) => o.value === s.pack)) $('pack').value = s.pack;
       }
 
+      function refreshPacks() {
+        return window.blerbSettings.packs().then((packs) => {
+          $('pack').replaceChildren(
+            ...packs.map((p) => Object.assign(document.createElement('option'), { value: p.id, textContent: p.name })),
+          );
+          return window.blerbSettings.get().then(render);
+        });
+      }
       // The pack list first, so render() can select the current one.
-      window.blerbSettings.packs().then((packs) => {
-        $('pack').replaceChildren(
-          ...packs.map((p) => Object.assign(document.createElement('option'), { value: p.id, textContent: p.name })),
-        );
-        return window.blerbSettings.get().then(render);
-      });
+      refreshPacks();
       window.blerbSettings.onChange(render);
       $('pack').addEventListener('change', (e) => window.blerbSettings.set({ pack: e.target.value }));
+
+      $('importBtn').addEventListener('click', async () => {
+        const status = $('importStatus');
+        $('importBtn').disabled = true;
+        $('importStatusRow').hidden = false;
+        status.textContent = 'importing…';
+        try {
+          const r = await window.blerbSettings.importPet($('importName').value.trim() || undefined);
+          if (r.canceled) { $('importStatusRow').hidden = true; return; }
+          if (r.ok) {
+            status.textContent = `Imported ${r.name} — say hi to your new pet.`;
+            $('importName').value = '';
+            await refreshPacks();
+          } else {
+            status.textContent = r.error || 'import failed';
+          }
+        } catch (err) {
+          // An IPC-level rejection must not strand "importing…" on screen.
+          status.textContent = 'import failed: ' + (err && err.message ? err.message : err);
+        } finally {
+          $('importBtn').disabled = false;
+        }
+      });
 
       for (const k of bools) {
         $(k).addEventListener('change', (e) => window.blerbSettings.set({ [k]: e.target.checked }));

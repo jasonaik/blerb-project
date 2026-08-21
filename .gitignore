@@ -8,6 +8,7 @@ Thumbs.db
 
 # Electron build output
 release/
+apps/desktop/build/
 
 # See CLAUDE.md § IP. Third-party character art is never committed.
 packs/*/

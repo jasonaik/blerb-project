@@ -18,6 +18,8 @@ export interface EmitAnimation {
   /** Indices into the emitted atlas grid. */
   frames: number[];
   fps: number;
+  /** Travel speed (px/s) the art was drawn for — feet-locks the cycle. */
+  designSpeed?: number | undefined;
 }
 
 export interface EmitOptions {
@@ -31,6 +33,8 @@ export interface EmitOptions {
   pixelArt: boolean;
   layout: AtlasLayout;
   animations: EmitAnimation[];
+  /** Graceful degradation map, e.g. climb→walk for packs with no climb art. */
+  aliases?: Record<string, string> | undefined;
   /** Procedural gait rig, for single-image packs. */
   rig?: NonNullable<PetManifestInput['rig']> | undefined;
   /**
@@ -42,9 +46,13 @@ export interface EmitOptions {
 }
 
 export async function emitPack(o: EmitOptions): Promise<string> {
-  const animations: Record<string, { frames: number[]; fps: number }> = {};
+  const animations: Record<string, { frames: number[]; fps: number; designSpeed?: number }> = {};
   for (const a of o.animations) {
-    animations[a.name] = { frames: a.frames, fps: a.fps };
+    animations[a.name] = {
+      frames: a.frames,
+      fps: a.fps,
+      ...(a.designSpeed !== undefined ? { designSpeed: a.designSpeed } : {}),
+    };
   }
 
   const manifest: PetManifestInput = {
@@ -65,6 +73,7 @@ export async function emitPack(o: EmitOptions): Promise<string> {
       count: o.layout.count,
     },
     animations,
+    ...(o.aliases && Object.keys(o.aliases).length > 0 ? { aliases: o.aliases } : {}),
     ...(o.rig ? { rig: o.rig } : {}),
   };
 

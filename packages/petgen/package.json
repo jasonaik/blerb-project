@@ -3,6 +3,14 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
   "bin": {
     "petgen": "./dist/cli.js"
   },
@@ -11,6 +19,7 @@
     "typecheck": "tsc --build && tsc --noEmit -p preview/tsconfig.json",
     "petgen": "tsx src/cli.ts",
     "preview": "tsx src/cli.ts preview",
+    "pokemon": "tsx scripts/import-vscode-pokemon.mts",
     "make-blob": "node scripts/make-blob-atlas.mjs"
   },
   "dependencies": {

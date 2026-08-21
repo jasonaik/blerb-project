@@ -17,7 +17,9 @@
     "lint": "eslint .",
     "preview": "pnpm --filter @blerb/petgen preview packs/blob",
     "petgen": "pnpm --filter @blerb/petgen petgen",
+    "pokemon": "pnpm --filter @blerb/petgen pokemon",
     "desktop": "pnpm build && pnpm --filter blerb-desktop start",
+    "dist": "pnpm build && pnpm --filter blerb-desktop dist",
     "blob": "node packages/petgen/scripts/make-blob-atlas.mjs"
   },
   "devDependencies": {

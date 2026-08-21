@@ -18,11 +18,21 @@ It is also, eventually, a productivity game. That layer isn't built yet; see [St
 
 Everything is JavaScript — there is no native compilation step and no `electron-rebuild`. Win32 calls go through [koffi](https://koffi.dev/), which ships prebuilt.
 
-## Run it
+## Install it (the double-clickable app)
 
 ```bash
 pnpm install
 ```
+
+```bash
+pnpm dist
+```
+
+That produces `apps/desktop/release/blerb-setup-0.1.0.exe` — a per-user installer, no admin needed. Run it and blerb installs and starts: a pet on your taskbar, a tray icon, and (on first run) the settings window. Launching blerb again while it's running — from the Start menu, or the installed `blerb.exe` — opens settings rather than a second pet. (Re-running the *installer* is different: it reinstalls and restarts the app.)
+
+The installer is unsigned. A copy you built yourself runs without fuss, but one that has crossed a network — downloaded from a release, sent to another machine — gets flagged by Windows SmartScreen on first run: "More info → Run anyway". blerb ships exactly one pet (blob); anything else you import stays in `%APPDATA%\blerb-desktop\packs\` on your machine.
+
+## Run it from source
 
 ```bash
 pnpm desktop
@@ -42,7 +52,8 @@ Open it from the **tray icon → Settings…**, by **double-clicking the tray ic
 
 | Setting | Default | What it does |
 |---|---|---|
-| Pet | blob | Which pet. The dropdown lists every pack in the `packs/` folder — switching is instant, and the new pet appears where the old one stood. Also in the tray and right-click menus. |
+| Pet | blob | Which pet. The dropdown lists every pack the app can see — switching is instant, and the new pet appears where the old one stood. Also in the tray and right-click menus (which degrade to "open Settings" past ~24 pets, because a native menu with 500 radio items is not a control). |
+| Import your own art | — | A file picker. Give it animated GIFs (named after animations: `walk.gif`, `idle.gif`…) or one still picture, optionally type a name, and it becomes a pack and your current pet on the spot. Same pipeline as the petgen CLI below. |
 | Pet visible | on | Hides the pet without quitting. It stops moving entirely while hidden. |
 | Invisible in screen capture | **on** | Sets `WDA_EXCLUDEFROMCAPTURE`. Windows itself keeps the pet out of screen shares and recordings while leaving it visible to you. |
 | Start with Windows | off | Standard login item. |
@@ -164,7 +175,25 @@ Three importers, by what you have:
 
 Every import ends by running `petgen doctor` on the result and telling you how to preview it. The importers derive the ground anchor from the art (where the feet are), keep the frames registered so walk bobs survive, detect pixel art and undo clean upscales, and read GIF timing from the file itself. What your art needs to look like — transparent background, facing right, feet uncropped — is documented in [`docs/pet-art.md`](docs/pet-art.md).
 
+Useful extras: `--speed walk=27` writes a `designSpeed` so the walk cycle stays phase-locked to distance travelled (feet grip instead of skate), and `--alias climb=walk` maps missing animations — a side-view walk rotated 90° by the renderer reads convincingly as climbing, so packs with only walk+idle still climb. The settings window's **Import your own art** button is this same pipeline behind a file picker, and applies the climb/hang aliases automatically.
+
 Imported packs appear in the settings window's **Pet** dropdown (and the tray menu) the next time you open it — pick one and the switch is instant.
+
+### Batch-importing the HGSS follower sprites
+
+The sprites in [jakobhoeg/vscode-pokemon](https://github.com/jakobhoeg/vscode-pokemon) are the official *HeartGold/SoulSilver* overworld follower animations — hand-drawn by Game Freak for every Pokémon that existed in 2009, ripped by fans. A batch importer turns a local clone into blerb packs, two per second:
+
+```bash
+git clone --depth 1 https://github.com/jakobhoeg/vscode-pokemon
+```
+
+```bash
+pnpm pokemon ./vscode-pokemon
+```
+
+That imports every gen 1–4 Pokémon (about 565 packs, front-facing idle, side-view walk, climb aliased to walk). `--shiny` adds shiny variants, `--gens 1,2` narrows, `--only pikachu,gyarados` cherry-picks, and `--out "%APPDATA%\blerb-desktop\packs"` targets the installed app instead of the repo. The script does no network I/O — you clone, it reads.
+
+**These packs are for your machine only.** The art is © Nintendo/Creatures/GAME FREAK; `packs/` is gitignored for exactly this reason, and blerb itself ships only blob. Don't commit them, don't redistribute them.
 
 A gotcha worth knowing: relative paths like `walk.gif` resolve from the folder you run the command in. If your art lives elsewhere, pass full paths:
 
@@ -174,9 +203,9 @@ pnpm petgen from-gif "C:\Users\you\Downloads\walk.gif" "C:\Users\you\Downloads\i
 
 ## Privacy
 
-- **There is no network code in this project.** Not disabled — absent.
+- **There is no network code in this project.** Not disabled — absent. (Even the Pokémon batch importer reads a clone *you* make.)
 - Nothing leaves your machine, because nothing has anywhere to go.
-- The only files written are the two in `%APPDATA%\blerb-desktop\` described above.
+- The only files written are the two in `%APPDATA%\blerb-desktop\` described above, plus any pet packs you import (a `packs\` folder next to them, for the installed app).
 - The game layer, when it exists, will record `{bucket, minutes}` and never a URL, window title, or file path.
 
 ## Status

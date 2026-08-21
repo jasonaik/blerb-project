@@ -71,6 +71,18 @@ export async function loadAnimated(file: string): Promise<AnimatedImage> {
   return { frames, delaysMs };
 }
 
+/**
+ * How many frames an image actually holds — 1 for a still, whatever the
+ * extension claims. A single-frame .gif is a picture in an animation
+ * container, and importing it as a one-frame "animation" yields a pet that
+ * never moves; the caller wants from-image's procedural rig instead.
+ */
+export async function countFrames(file: string): Promise<number> {
+  mustExist(file);
+  const meta = await sharp(file, { animated: true, pages: -1 }).metadata();
+  return meta.pages ?? 1;
+}
+
 export async function savePng(r: Raster, file: string): Promise<void> {
   await mkdir(dirname(file), { recursive: true });
   const buf = await sharp(Buffer.from(r.data.buffer, r.data.byteOffset, r.data.byteLength), {

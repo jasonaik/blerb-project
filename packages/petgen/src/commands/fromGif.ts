@@ -22,6 +22,16 @@ export interface FromGifOptions {
   outDir: string;
   /** Animation name; only valid with a single input. */
   anim?: string | undefined;
+  /**
+   * Per-input animation names, parallel to `inputs`; an undefined entry falls
+   * back to the filename slug. For callers whose files aren't named after
+   * their animations (batch imports, GUI file pickers).
+   */
+  animNames?: (string | undefined)[] | undefined;
+  /** designSpeed (px/s) per animation name — feet-locks that cycle. */
+  speeds?: Record<string, number> | undefined;
+  /** Alias map written into the manifest, e.g. { climb: 'walk' }. */
+  aliases?: Record<string, string> | undefined;
   id?: string | undefined;
   name?: string | undefined;
   author?: string | undefined;
@@ -79,9 +89,12 @@ export async function fromGif(o: FromGifOptions): Promise<string> {
   if (o.anim && o.inputs.length > 1) {
     throw new Error('--anim names a single animation — with several inputs, name the files instead');
   }
+  if (o.animNames && o.animNames.length !== o.inputs.length) {
+    throw new Error(`animNames must parallel inputs (${o.animNames.length} names for ${o.inputs.length} files)`);
+  }
 
   const groups: GifGroup[] = [];
-  for (const input of o.inputs) {
+  for (const [idx, input] of o.inputs.entries()) {
     const { frames, delaysMs } = await loadAnimated(input);
     if (frames.length < 2) {
       const apng = /\.a?png$/i.test(input)
@@ -115,7 +128,8 @@ export async function fromGif(o: FromGifOptions): Promise<string> {
     }
     const fps = Math.min(50, Math.max(1, Math.round((1000 / delay) * 100) / 100));
 
-    groups.push({ anim: o.anim ?? slugFromFilename(input), frames: unique, play: timedPlay, fps });
+    const anim = o.anim ?? o.animNames?.[idx] ?? slugFromFilename(input);
+    groups.push({ anim, frames: unique, play: timedPlay, fps });
   }
 
   const dupNames = groups.map((g) => g.anim).filter((n, i, a) => a.indexOf(n) !== i);
@@ -154,6 +168,26 @@ export async function fromGif(o: FromGifOptions): Promise<string> {
   const animations = assembleAnimations(
     groups.map((g) => ({ anim: g.anim, play: g.play, uniqueCount: g.frames.length, fps: g.fps })),
   );
+  // Case-insensitive on purpose, and a leftover key is an ERROR: animation
+  // names are lowercased filename slugs, so `--speed Walk=27` matching
+  // nothing silently is the exact trap parseFpsFlags already documents —
+  // and a silently dropped speed means feet that skate with zero feedback.
+  if (o.speeds) {
+    const byLower = new Map(animations.map((a) => [a.name.toLowerCase(), a]));
+    const unmatched: string[] = [];
+    for (const [key, speed] of Object.entries(o.speeds)) {
+      const a = byLower.get(key.toLowerCase());
+      if (a) a.designSpeed = speed;
+      else unmatched.push(key);
+    }
+    if (unmatched.length > 0) {
+      throw new Error(
+        `--speed names no animation: ${unmatched.join(', ')} — this import produces ${animations
+          .map((a) => a.name)
+          .join(', ')}`,
+      );
+    }
+  }
 
   const id = o.id ?? idFromOutDir(o.outDir);
   return emitPack({
@@ -166,5 +200,6 @@ export async function fromGif(o: FromGifOptions): Promise<string> {
     pixelArt: verdict.pixelArt,
     layout,
     animations,
+    aliases: o.aliases,
   });
 }

@@ -1,0 +1,45 @@
+# Packaging for the installed, double-clickable blerb.
+#
+# What ships: the tsup/vite build output, package.json, the two native
+# runtime deps (koffi, sharp — collected automatically as `dependencies`,
+# unpacked from the asar because .node files can't load from inside one),
+# and ONE pet: packs/blob. Third-party character packs live only in the
+# user's gitignored packs/ folder and in userData — never in an artifact
+# (CLAUDE.md §13).
+appId: dev.blerb.desktop
+productName: blerb
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**
+  - package.json
+  # koffi ships prebuilds for 18 platform/arch combos (~26MB); only win32_x64
+  # can ever load from this NSIS-only Windows build. Drop the rest.
+  - "!node_modules/koffi/build/koffi/darwin*/**"
+  - "!node_modules/koffi/build/koffi/freebsd*/**"
+  - "!node_modules/koffi/build/koffi/linux*/**"
+  - "!node_modules/koffi/build/koffi/musl*/**"
+  - "!node_modules/koffi/build/koffi/openbsd*/**"
+  - "!node_modules/koffi/build/koffi/win32_ia32/**"
+  - "!node_modules/koffi/build/koffi/win32_arm64/**"
+asarUnpack:
+  - node_modules/koffi/**
+  - node_modules/sharp/**
+  - node_modules/@img/**
+extraResources:
+  - from: ../../packs/blob
+    to: packs/blob
+# koffi and sharp ship prebuilt N-API binaries that load in Electron as-is;
+# rebuilding against Electron headers is exactly the pain koffi was chosen
+# to avoid.
+npmRebuild: false
+win:
+  target:
+    - nsis
+  icon: build/icon.ico
+nsis:
+  oneClick: true
+  perMachine: false
+  artifactName: blerb-setup-${version}.${ext}
+  deleteAppDataOnUninstall: false

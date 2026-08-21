@@ -66,5 +66,7 @@ export const CH = {
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',
   packsList: 'packs:list',
+  /** Opens a file picker in main, imports the chosen art as a new pack. */
+  packsImport: 'packs:import',
   appQuit: 'app:quit',
 } as const;

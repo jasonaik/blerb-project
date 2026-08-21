@@ -25,6 +25,9 @@ Import options
   --cols/--margin/--spacing <n>   from-sheet: source layout, if not tight
   --pattern <p>         from-frames: filename shape, default {anim}_{i}.png
   --fps <n|anim=n>      from-frames: playback rate(s), default 8 (repeatable)
+  --speed <anim=px>     from-gif: designSpeed for an animation, e.g. --speed walk=27
+                        (feet-lock: the walk cycle stays phase-locked to travel)
+  --alias <a=b>         from-gif: manifest alias, e.g. --alias climb=walk (repeatable)
   --tolerance <t>       from-image: backdrop match strictness 0..1, default 0.1
   --keep-bg             from-image: skip background removal
   --id/--name/--author/--license  pack metadata
@@ -121,6 +124,18 @@ const intFlag = (args: Args, key: string): number | undefined => {
   return v === undefined ? undefined : Number(v);
 };
 
+/** `--speed walk=27 --speed climb=18` → { walk: 27, climb: 18 }. */
+function pairFlags<T>(values: string[], flag: string, coerce: (s: string) => T): Record<string, T> | undefined {
+  if (values.length === 0) return undefined;
+  const out: Record<string, T> = {};
+  for (const v of values) {
+    const eq = v.indexOf('=');
+    if (eq <= 0) throw new Error(`--${flag} needs name=value, got "${v}"`);
+    out[v.slice(0, eq)] = coerce(v.slice(eq + 1));
+  }
+  return out;
+}
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   const [command, ...rest] = args.positional;
@@ -200,6 +215,8 @@ async function main(): Promise<number> {
         inputs: rest.map(userPath),
         outDir: requireOut(args, command),
         anim: args.get('anim'),
+        speeds: pairFlags(args.all('speed'), 'speed', Number),
+        aliases: pairFlags(args.all('alias'), 'alias', String),
         ...meta(args),
       });
       return finishImport(manifest);
