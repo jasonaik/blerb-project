@@ -1,6 +1,6 @@
 /**
- * Background removal for `from-image`: the input is one photo-ish picture of
- * a character, usually on a flat backdrop, and the pet needs to be cut out.
+ * Background removal for opaque inputs: a picture (or a GIF's frames) of a
+ * character, usually on a flat backdrop, and the pet needs to be cut out.
  *
  * Flood fill from the corners, not chroma-key: only pixels CONNECTED to the
  * image edge are background, so a white character on a white backdrop keeps
@@ -11,40 +11,90 @@
 
 import type { Raster } from './raster.js';
 
+export type RGB = readonly [number, number, number];
+
 /**
  * Perceptually-weighted colour distance, 0..1. Green dominates luminance
  * perception; the 2/4/3 weights are the classic cheap approximation.
  */
-function dist(r: Raster, i: number, c: readonly [number, number, number]): number {
+function dist(r: Raster, i: number, c: RGB): number {
   const dr = r.data[i]! - c[0];
   const dg = r.data[i + 1]! - c[1];
   const db = r.data[i + 2]! - c[2];
   return Math.sqrt(2 * dr * dr + 4 * dg * dg + 3 * db * db) / 765;
 }
 
+/**
+ * Removed pixels this close to a backdrop colour mean the backdrop met the
+ * art in a hard step — no anti-aliased blend fringe. That is the evidence
+ * the pixel-art detector's binary-alpha vote stood for, still observable in
+ * the RGB after the alpha has been synthesized.
+ */
+const HARD_CUT = 0.02;
+
+/** The backdrop's colours, sampled where the backdrop must be: the corners. */
+export function cornerColours(r: Raster): RGB[] {
+  const { w, h, data } = r;
+  const out: RGB[] = [];
+  for (const [x, y] of [[0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1]] as const) {
+    const i = (y * w + x) * 4;
+    out.push([data[i]!, data[i + 1]!, data[i + 2]!]);
+  }
+  return out;
+}
+
+/**
+ * One backdrop for a whole animation: per corner position, the modal colour
+ * across frames. A frame that happens to put a foot in a corner would
+ * otherwise sample the CHARACTER as its backdrop and flood the character
+ * away — the encoder flattened every frame onto the same colour, and the
+ * other frames know what it was.
+ */
+export function sharedBackdrop(frames: readonly Raster[]): RGB[] {
+  const out: RGB[] = [];
+  for (let k = 0; k < 4; k++) {
+    const counts = new Map<string, { c: RGB; n: number }>();
+    for (const f of frames) {
+      const c = cornerColours(f)[k]!;
+      const key = c.join(',');
+      const e = counts.get(key) ?? { c, n: 0 };
+      e.n++;
+      counts.set(key, e);
+    }
+    out.push([...counts.values()].sort((a, b) => b.n - a.n)[0]!.c);
+  }
+  return out;
+}
+
 export interface RemovalResult {
   out: Raster;
   /** Fraction of pixels removed, 0..1. ~0 means no backdrop was found. */
   removed: number;
+  /** Every removed pixel was within HARD_CUT of the backdrop: no blend fringe. */
+  hardCut: boolean;
 }
 
 /**
  * Remove the edge-connected backdrop. `tolerance` is the perceptual distance
- * (0..1) a pixel may sit from a corner colour and still count as backdrop;
+ * (0..1) a pixel may sit from a backdrop colour and still count as backdrop;
  * 0.10 forgives JPEG noise and soft vignettes without eating pale characters.
+ * `backdrop` defaults to this frame's own corners; a GIF passes the colours
+ * shared across its frames.
  */
-export function removeBackground(src: Raster, tolerance = 0.1): RemovalResult {
+export function removeBackground(
+  src: Raster,
+  tolerance = 0.1,
+  backdrop: readonly RGB[] = cornerColours(src),
+): RemovalResult {
   const { w, h } = src;
   const out: Raster = { w, h, data: new Uint8Array(src.data) };
 
-  // The backdrop's colours, sampled where the backdrop must be: the corners.
-  // Four samples, deduplicated loosely, so a subtle gradient still matches.
-  const corners: [number, number, number][] = [];
-  for (const [x, y] of [[0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1]] as const) {
-    const i = (y * w + x) * 4;
-    corners.push([out.data[i]!, out.data[i + 1]!, out.data[i + 2]!]);
-  }
-  const isBackdrop = (i: number) => corners.some((c) => dist(out, i, c) <= tolerance);
+  const nearest = (i: number): number => {
+    let best = Infinity;
+    for (const c of backdrop) best = Math.min(best, dist(out, i, c));
+    return best;
+  };
+  const isBackdrop = (i: number) => nearest(i) <= tolerance;
 
   // BFS from every edge pixel that looks like backdrop.
   const visited = new Uint8Array(w * h);
@@ -65,8 +115,10 @@ export function removeBackground(src: Raster, tolerance = 0.1): RemovalResult {
   }
 
   let removed = 0;
+  let hardCut = true;
   while (queue.length > 0) {
     const p = queue.pop()!;
+    if (hardCut && nearest(p * 4) > HARD_CUT) hardCut = false;
     out.data[p * 4 + 3] = 0;
     removed++;
     const x = p % w;
@@ -80,14 +132,14 @@ export function removeBackground(src: Raster, tolerance = 0.1): RemovalResult {
     }
   }
 
-  return { out, removed: removed / (w * h) };
+  return { out, removed: removed / (w * h), hardCut: removed > 0 && hardCut };
 }
 
 /**
  * Soften the cut edge by one pixel: any surviving pixel that touches a
  * removed/empty one gets half alpha. For smooth art this hides the fringe of
  * backdrop-coloured pixels the tolerance left behind; for pixel art it would
- * blur the outline, so from-image skips it when the art detects as pixel art.
+ * blur the outline, so the importers skip it when the art detects as pixel art.
  */
 export function erodeEdge(src: Raster): Raster {
   const { w, h } = src;

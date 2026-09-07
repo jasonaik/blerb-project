@@ -7,7 +7,9 @@ import { deriveFrame, type PetSnapshot, type PetState, type World } from '@blerb
 import { CH, type OverlayCommand, type Settings } from '../shared/ipc';
 import { DEFAULTS, loadSettings, sanitizeClassification, saveSettings, settingsFileExists } from './settings';
 import { importPet } from './importer';
-import { startObserver, type Observer } from './observer';
+import { localDayKeyAgo, startObserver, type Observer } from './observer';
+import { loadGameState, saveGameState } from './gameStore';
+import { describe as describeRetrospective, retrospective } from '@blerb/game';
 import { createScanner, fallbackWorld, type Scanner } from './scanner';
 import { createOverlayWindow, createSettingsWindow } from './windows';
 import { createPetHost, loadPackSync, type PetHost } from './pet';
@@ -67,6 +69,7 @@ let dragLatch = false;
 let interactiveWin: BrowserWindow | null = null;
 let hiddenByFullscreen = false;
 let quitting = false;
+let sessionEnded = false;
 
 const effectiveProtection = () => settings.captureProtection && !process.env.BLERB_ALLOW_CAPTURE;
 const snapshotFile = () => join(app.getPath('userData'), 'pet-snapshot.json');
@@ -199,6 +202,16 @@ function spawnOverlays(): void {
 
     win.webContents.on('console-message', (_e, _l, message) => console.log('[overlay]', message));
     win.webContents.on('did-finish-load', () => pushVisibility());
+    // Windows shutdown/logoff never emits app 'before-quit' (Electron docs,
+    // verbatim); WM_ENDSESSION reaches every top-level window as
+    // 'session-end'. Both saves are synchronous, so they finish before the
+    // process is terminated. Guarded so N overlays produce one write.
+    win.on('session-end', () => {
+      if (sessionEnded) return;
+      sessionEnded = true;
+      saveSnapshot();
+      saveGame();
+    });
     win.on('closed', () => {
       overlays.delete(display.id);
       if (!quitting && overlays.size === 0) quit();
@@ -236,13 +249,33 @@ function broadcast(channel: string, payload: unknown): void {
 
 function pushVisibility(): void {
   const hidden = !settings.petVisible || hiddenByFullscreen;
+  // Drop interactivity BEFORE hiding, while the window can still be told.
+  // Hiding a window that is mid-grab (ignoreMouseEvents=false) leaves the
+  // click-through flag to be flipped on an invisible window a tick later,
+  // and that flip does not survive the next show — the pet came back
+  // visible but unclickable.
+  if (hidden) {
+    // A grab in progress ends here: the renderer will get no pointerup for
+    // a window that just vanished, and a latch left set would freeze the
+    // hit test (and, worse, keep the hidden window interactive) forever.
+    dragLatch = false;
+    setInteractive(null);
+  }
   for (const { win } of overlays.values()) {
     if (win.isDestroyed()) continue;
     if (hidden && win.isVisible()) win.hide();
     if (!hidden && !win.isVisible()) {
       win.showInactive();
       win.setContentProtection(effectiveProtection()); // can drop across hide/show
+      // Same class of loss as content protection above: re-baseline the
+      // click-through state on every show. The cursor watcher makes the
+      // window interactive again within a tick if the pet is under the
+      // cursor, so this costs nothing and guarantees a known starting point.
+      win.setIgnoreMouseEvents(true, { forward: true });
     }
+  }
+  if (process.env.BLERB_DEBUG) {
+    console.log(`[vis] ${hidden ? 'HIDDEN' : 'shown'} (fullscreen=${hiddenByFullscreen} petVisible=${settings.petVisible})`);
   }
   pet?.sim.dispatch(hidden ? { k: 'hide', reason: hiddenByFullscreen ? 'fullscreen' : 'manual' } : { k: 'show' });
   pet?.wake();
@@ -541,7 +574,31 @@ function registerIpc(): void {
     if (result.ok && result.id) applySettings({ pack: result.id });
     return result;
   });
+  // The retrospective (design contract rule 2): computed when asked, never
+  // pushed. The host owns the calendar — which keys are today, yesterday and
+  // the last seven days — and the pure package does the arithmetic.
+  ipcMain.handle(CH.gameSummary, () => {
+    if (!observer) return { lines: [] };
+    const now = Date.now();
+    const r = retrospective(observer.game.state, {
+      today: localDayKeyAgo(now, 0),
+      yesterday: localDayKeyAgo(now, 1),
+      week: Array.from({ length: 7 }, (_, i) => localDayKeyAgo(now, 6 - i)),
+    });
+    return { lines: describeRetrospective(r) };
+  });
+  ipcMain.handle(CH.gameCurrentApp, () => observer?.currentApp() ?? null);
   ipcMain.on(CH.appQuit, quit);
+}
+
+/** Persist the ledger: on a timer, and at quit. Only {bucket, minutes} ever hits disk. */
+function saveGame(): void {
+  if (!observer) return;
+  try {
+    saveGameState(observer.game.serialize());
+  } catch (err) {
+    console.error('[blerb] could not save game.json:', err);
+  }
 }
 
 // ---------------------------------------------------------------- lifecycle
@@ -549,6 +606,7 @@ function registerIpc(): void {
 function quit(): void {
   quitting = true;
   saveSnapshot();
+  saveGame();
   pet?.stop();
   scanner?.stop();
   observer?.stop();
@@ -601,10 +659,12 @@ void app.whenReady().then(() => {
   scanner.setSmoothTracking(settings.smoothTracking);
   scanner.start(300);
   pet.start();
-  // Phase 5: observe and log only. Nothing persists, nothing reacts yet.
-  observer = startObserver(settings.classification);
+  // The observation layer resumes yesterday's ledger; the pet does not react
+  // to it yet. game.json is written once a minute and at quit.
+  observer = startObserver(settings.classification, { initial: loadGameState() });
 
   setInterval(saveSnapshot, 10_000);
+  setInterval(saveGame, 60_000);
 
   // First launch: show the settings window so the app visibly exists beyond
   // a tray icon and a sprite on the taskbar.
@@ -642,4 +702,13 @@ void app.whenReady().then(() => {
 // Tray app: closing every window is not quitting.
 app.on('window-all-closed', () => {
   /* stay resident */
+});
+
+// Anything that calls app.quit() without going through quit() — Electron's
+// own paths, a future caller. NOT OS shutdown: Windows does not emit this
+// for a shutdown or logoff; that case is the overlays' 'session-end' above.
+app.on('before-quit', () => {
+  if (quitting) return;
+  saveSnapshot();
+  saveGame();
 });

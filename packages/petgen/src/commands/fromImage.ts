@@ -23,6 +23,8 @@ export interface FromImageOptions {
   tolerance?: number | undefined;
   /** Skip background removal entirely (the alpha is already right). */
   keepBg?: boolean | undefined;
+  /** Override the pixel-art verdict: true = native pixel art, false = smooth. */
+  pixelArt?: boolean | undefined;
   id?: string | undefined;
   name?: string | undefined;
   author?: string | undefined;
@@ -38,10 +40,12 @@ export async function fromImage(o: FromImageOptions): Promise<string> {
   // otherwise-opaque art.
   const alreadyCut = transparentFraction(img) >= 0.02;
   let removalRan = false;
+  let hardCut = false;
   if (alreadyCut) {
     console.log('input already has transparency — skipping background removal');
   } else if (!o.keepBg) {
-    const { out, removed } = removeBackground(img, o.tolerance ?? 0.1);
+    const { out, removed, hardCut: hard } = removeBackground(img, o.tolerance ?? 0.1);
+    hardCut = hard;
     if (removed < 0.02) {
       console.warn(
         'no backdrop found from the corners — the character may fill the frame, ' +
@@ -60,8 +64,16 @@ export async function fromImage(o: FromImageOptions): Promise<string> {
   }
 
   // A flood-filled alpha channel is binary by construction, so it must not
-  // count as pixel-art evidence.
-  const verdict = detectForImport([img], { alphaSynthetic: removalRan });
+  // count as pixel-art evidence — unless the cut was HARD, which is the same
+  // evidence still visible in the RGB.
+  const detected = detectForImport([img], { alphaSynthetic: removalRan, hardEdge: hardCut });
+  const verdict =
+    o.pixelArt === undefined
+      ? detected
+      : { ...detected, pixelArt: o.pixelArt, scale: o.pixelArt ? detected.scale : 1 };
+  if (o.pixelArt !== undefined && o.pixelArt !== detected.pixelArt) {
+    console.log(`treated as ${verdict.pixelArt ? 'pixel art' : 'smooth art'} (override)`);
+  }
   if (verdict.scale >= 2) {
     console.log(`detected pixel art upscaled ${verdict.scale}x — importing at native resolution`);
     img = downscaleBy(img, verdict.scale);

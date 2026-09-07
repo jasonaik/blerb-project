@@ -46,6 +46,13 @@ export interface GameConfig {
   classification: Classification;
   /** t (ms) → day bucket, e.g. a local "2026-08-16". The host owns timezones. */
   dayKey: (t: number) => string;
+  /**
+   * Resume from a saved state (see persist.ts). Copied, never aliased. The
+   * stale prevT it carries is CORRECT to keep: the first sample after a
+   * restart is a gap of at least the downtime, and the gap rule already
+   * closes whatever session was open at the last input before we stopped.
+   */
+  initial?: GameState | undefined;
 }
 
 export interface Game {
@@ -69,14 +76,16 @@ const emptyDay = (): DayStats => ({
 export function createGame(cfg: GameConfig): Game {
   let cls = cfg.classification;
 
-  const state: GameState = {
-    prevT: null,
-    prevBucket: null,
-    prevIdleMs: null,
-    session: null,
-    days: {},
-    sessions: [],
-  };
+  const state: GameState = cfg.initial
+    ? (JSON.parse(JSON.stringify(cfg.initial)) as GameState)
+    : {
+        prevT: null,
+        prevBucket: null,
+        prevIdleMs: null,
+        session: null,
+        days: {},
+        sessions: [],
+      };
 
   function dayOf(t: number): DayStats {
     const key = cfg.dayKey(t);

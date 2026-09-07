@@ -62,8 +62,12 @@ Open it from the **tray icon → Settings…**, by **double-clicking the tray ic
 | Can hang upside down | on | Whether it hangs under the top edge of a window, or the top of the screen, and walks along upside down. |
 | Follow moving windows smoothly | on | Watches the desktop ~60×/s while you drag or resize a window, instead of ~3×/s, so the pet rides it rather than jumping after it. Costs about 1% of one CPU core, and only while something is actually moving. Turn it off if you want the app as close to free as possible. |
 | Debug overlay | off | Draws the platforms, walls and ceilings the pet believes in. Unglamorous and the fastest way to see why it's standing somewhere odd. |
+| Today | — | The retrospective: *"Focus today: 1h 52m across 3 sessions. Longest session: 52m — your longest this week."* Plain sentences about what already happened, read fresh each time the window comes to the front. No counter ticks while you watch; there are no points to add up. |
+| Focus apps | empty | Process names, comma-separated. Time in these counts as focus, and a stretch of it is a session. |
+| Elsewhere apps | empty | Ships empty on purpose — nothing is pre-labelled as bad. Anything unlisted is neutral. |
+| Last app in front | — | The process name blerb last saw in the foreground, with a **+ focus** button, so you never have to guess how a program spells its exe. |
 
-Settings and the pet's last position are stored in `%APPDATA%\blerb-desktop\` as `settings.json` and `pet-snapshot.json`. Delete them to reset.
+Settings, the pet's last position and the day ledger are stored in `%APPDATA%\blerb-desktop\` as `settings.json`, `pet-snapshot.json` and `game.json`. Delete them to reset. The ledger holds ninety days of `{bucket, minutes}` and session lengths — no app names, no titles, no paths; its shape is checked on the way back in, and a file that doesn't fit starts fresh.
 
 The tray menu carries the same toggles plus **Recenter pet**, for when it has wandered somewhere you can't reach.
 
@@ -177,6 +181,10 @@ Every import ends by running `petgen doctor` on the result and telling you how t
 
 Useful extras: `--speed walk=27` writes a `designSpeed` so the walk cycle stays phase-locked to distance travelled (feet grip instead of skate), and `--alias climb=walk` maps missing animations — a side-view walk rotated 90° by the renderer reads convincingly as climbing, so packs with only walk+idle still climb. The settings window's **Import your own art** button is this same pipeline behind a file picker, and applies the climb/hang aliases automatically.
 
+GIFs don't need a transparent background: an opaque one gets the same corner flood-fill as `from-image`, and hand-drawn art at any resolution is kept at full size with `atlas.scale` set so it renders pet-sized. Mixing pixel art and a big drawing in one import works too — the drawing is resampled down to the pixel art's height (or `--height <px>`), so they share one atlas. If the pixel-art detection guesses wrong for your file, `--pixel-art` or `--smooth` overrides it.
+
+A file named `surprise.gif` becomes a flourish: every few minutes, at random, the pet plays it for about five seconds and then carries on. Nothing counts it, nothing announces it.
+
 Imported packs appear in the settings window's **Pet** dropdown (and the tray menu) the next time you open it — pick one and the switch is instant.
 
 ### Batch-importing the HGSS follower sprites
@@ -205,16 +213,16 @@ pnpm petgen from-gif "C:\Users\you\Downloads\walk.gif" "C:\Users\you\Downloads\i
 
 - **There is no network code in this project.** Not disabled — absent. (Even the Pokémon batch importer reads a clone *you* make.)
 - Nothing leaves your machine, because nothing has anywhere to go.
-- The only files written are the two in `%APPDATA%\blerb-desktop\` described above, plus any pet packs you import (a `packs\` folder next to them, for the installed app).
-- The game layer, when it exists, will record `{bucket, minutes}` and never a URL, window title, or file path.
+- The only files written are the three in `%APPDATA%\blerb-desktop\` described above, plus any pet packs you import (a `packs\` folder next to them, for the installed app).
+- The game layer records `{bucket, minutes}` and session lengths, and never a URL, window title, or file path. A test pins that its state *cannot* hold an app name; the classification lists you type are the one place a process name is stored, and that is in your settings file, not the ledger.
 
 ## Status
 
 Built and working: the simulation core, the pack format, the canvas renderer, the preview harness, and the Electron overlay — walking, falling, dragging, climbing, hanging upside down, and full multi-monitor roaming.
 
-Also built: the sprite importers (`petgen from-sheet`, `from-frames`, `from-gif`, `from-image` with its procedural gait), `petgen doctor`, and the observation layer — session segmentation over the only two signals the app will ever read (foreground process basename and one coarse idle threshold). It observes and logs; nothing persists yet, and the pet doesn't react yet.
+Also built: the sprite importers (`petgen from-sheet`, `from-frames`, `from-gif`, `from-image` with its procedural gait), `petgen doctor`, the Windows installer, and the first slice of the game: session segmentation over the only two signals the app will ever read (foreground process basename and one coarse idle threshold), a ninety-day ledger of `{bucket, minutes}` that survives restarts, the classification lists in the settings window, and the retrospective — plain sentences about today, yesterday and this week, read when you open the window.
 
-Not built yet: the rest of the game layer (retrospective XP, the summary, breaks, pet reactions). The design for those is settled and deliberately evidence-led — including a decision *not* to infer focus or attention, because the best published detector is ~75% accurate and its characteristic failure is firing hardest at someone quietly concentrating.
+Not built yet: the pet reacting to any of it, breaks, and the rest of the game layer. The design for those is settled and deliberately evidence-led — including a decision *not* to infer focus or attention, because the best published detector is ~75% accurate and its characteristic failure is firing hardest at someone quietly concentrating.
 
 Known rough edges:
 

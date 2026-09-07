@@ -69,13 +69,24 @@ const BEHAVIOR_DURATION_MS: Record<BehaviorId, readonly [number, number]> = {
   climb: [1500, 5000],
   cling: [800, 2600],
   hang: [1200, 5000],
+  /** ~5s: long enough to notice, short enough to miss if you blinked. */
+  surprise: [4000, 6000],
   // Transient states; duration is decided by physics, not the picker.
   fall: [0, 0],
   land: [180, 180],
 };
 
 /** Behaviors the picker may choose on the ground. */
-const PICKABLE: readonly BehaviorId[] = ['idle', 'walk', 'sit', 'sleep', 'stretch'];
+const PICKABLE: readonly BehaviorId[] = ['idle', 'walk', 'sit', 'sleep', 'stretch', 'surprise'];
+
+/**
+ * Default weight for `surprise` when the pack ships that animation but says
+ * nothing about how often. Against the default idle weights (14 in total)
+ * this is ~1.75% of decisions — a decision lands every few seconds, so a
+ * flourish every few minutes. Randomised, never scheduled (rule 6), and
+ * nothing in state remembers it happened (rule 5).
+ */
+const SURPRISE_WEIGHT = 0.25;
 
 /**
  * Reserved platform id for "resting on the bottom of a region with no real
@@ -334,7 +345,14 @@ export function createSim(opts: SimOptions): Sim {
     const weights = PICKABLE.filter((b) => b !== 'walk' || mayWalk)
       .filter((b) => (b === 'sleep' ? pack.behavior.can.sleep : true))
       .filter((b) => (b === 'sit' ? pack.behavior.can.sit : true))
-      .map((b) => [b, pack.behavior.idleWeights[b] ?? 0] as const);
+      // Only a pack that actually PROVIDES a surprise — real art, or an alias
+      // that reaches real art — gets to spring one. The idle fallback would
+      // just be five seconds of standing still.
+      .filter((b) => (b === 'surprise' ? pack.has('surprise') : true))
+      .map(
+        (b) =>
+          [b, pack.behavior.idleWeights[b] ?? (b === 'surprise' ? SURPRISE_WEIGHT : 0)] as const,
+      );
 
     const chosen = weightedPick(state, weights) ?? 'idle';
 

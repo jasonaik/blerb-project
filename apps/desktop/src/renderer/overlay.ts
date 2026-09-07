@@ -126,6 +126,15 @@ async function main(): Promise<void> {
     };
   }
 
+  // Drag state lives above the subscriptions: a visibility message can end a
+  // drag, and it arrives on the same channel set as everything else.
+  let dragging = false;
+  const endDrag = () => {
+    if (!dragging) return;
+    dragging = false;
+    window.blerb.drag(false);
+  };
+
   let artSeq = 0;
   window.blerb.onInit((next) => {
     // Sent when displays are rearranged (this window may now be a different
@@ -159,7 +168,9 @@ async function main(): Promise<void> {
     world = w;
     if (debug) paint();
   });
-  window.blerb.onVisibility(() => {
+  window.blerb.onVisibility((v) => {
+    // Hidden mid-drag: no pointerup is coming for a window that is gone.
+    if (v.hidden) endDrag();
     renderer.clear(innerWidth, innerHeight);
     prevRect = null;
   });
@@ -175,7 +186,6 @@ async function main(): Promise<void> {
   // Main only routes mouse events here while the cursor is over the pet, so a
   // pointerdown is by construction a grab. Coordinates go back out as GLOBAL
   // so the pet can be carried from one monitor to another.
-  let dragging = false;
   const place = (e: PointerEvent) =>
     window.blerb.place({ x: e.clientX + origin.x, y: e.clientY + origin.y });
 
@@ -186,13 +196,8 @@ async function main(): Promise<void> {
     place(e);
   });
   addEventListener('pointermove', (e) => {
-    if (dragging) place(e);
+    if (dragging && e.buttons & 1) place(e);
   });
-  const endDrag = () => {
-    if (!dragging) return;
-    dragging = false;
-    window.blerb.drag(false);
-  };
   addEventListener('pointerup', endDrag);
   addEventListener('pointercancel', endDrag);
   addEventListener('contextmenu', (e) => {

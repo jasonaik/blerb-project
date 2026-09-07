@@ -32,6 +32,8 @@ interface Api {
   GetTopWindow: (h: unknown) => unknown;
   GetWindow: (h: unknown, cmd: number) => unknown;
   GetForegroundWindow: () => unknown;
+  GetShellWindow: () => unknown;
+  GetClassNameW: (h: unknown, buf: Uint16Array, size: number) => number;
   IsWindowVisible: (h: unknown) => boolean;
   IsIconic: (h: unknown) => boolean;
   GetWindowTextLengthW: (h: unknown) => number;
@@ -60,6 +62,8 @@ try {
     GetTopWindow: user32.func('GetTopWindow', 'void *', ['void *']),
     GetWindow: user32.func('GetWindow', 'void *', ['void *', 'uint32_t']),
     GetForegroundWindow: user32.func('GetForegroundWindow', 'void *', []),
+    GetShellWindow: user32.func('GetShellWindow', 'void *', []),
+    GetClassNameW: user32.func('GetClassNameW', 'int32_t', ['void *', '_Out_ uint16_t *', 'int32_t']),
     IsWindowVisible: user32.func('IsWindowVisible', 'bool', ['void *']),
     IsIconic: user32.func('IsIconic', 'bool', ['void *']),
     GetWindowTextLengthW: user32.func('GetWindowTextLengthW', 'int32_t', ['void *']),
@@ -155,11 +159,43 @@ export function scanWindows(take = 10, walkLimit = 120): NativeWindowRect[] {
   return out;
 }
 
-/** Extended frame bounds of the foreground window, physical px. */
+/**
+ * Window classes that are the DESKTOP, not an application.
+ *
+ * `Progman` and `WorkerW` host the wallpaper and icons; `Shell_TrayWnd` is the
+ * taskbar. Every one of them is a real, screen-sized window, so to a naive
+ * "does the foreground window cover the display?" test they are indis-
+ * tinguishable from a fullscreen game.
+ */
+const SHELL_CLASSES = new Set(['Progman', 'WorkerW', 'Shell_TrayWnd', 'Shell_SecondaryTrayWnd']);
+
+/** Win32 class name of a window, or '' if it can't be read. */
+export function classNameOf(hwnd: unknown): string {
+  if (!api) return '';
+  const buf = new Uint16Array(256);
+  const n = api.GetClassNameW(hwnd, buf, buf.length);
+  if (n <= 0) return '';
+  return Buffer.from(buf.buffer, 0, n * 2).toString('utf16le');
+}
+
+/**
+ * Extended frame bounds of the foreground window, physical px — or **null when
+ * the desktop itself is focused**.
+ *
+ * The one caller is the fullscreen check, which hides the pet when an app
+ * covers a whole display. The desktop passes that test trivially: clicking the
+ * wallpaper makes Progman foreground, and Progman spans every monitor. So
+ * "click the desktop" read as "a fullscreen game launched" and the pet
+ * vanished until you clicked a window again. Standing on the wallpaper is the
+ * normal case, not an occlusion — the desktop can never hide the pet.
+ */
 export function foregroundRect(): NativeWindowRect | null {
   if (!api) return null;
   const hwnd = api.GetForegroundWindow();
   if (!hwnd) return null;
+  const shell = api.GetShellWindow();
+  if (shell && api.address(hwnd) === api.address(shell)) return null;
+  if (SHELL_CLASSES.has(classNameOf(hwnd))) return null;
   return extendedBounds(hwnd);
 }
 

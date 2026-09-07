@@ -5,7 +5,11 @@ import { EPS, regionAt, unionRect } from './geom.js';
 import { buildDesktopGeometry, type ScreenInfo } from './desktop.js';
 import type { PetState, World } from './types.js';
 
-const testPack = (behavior: Record<string, unknown> = {}) =>
+const testPack = (
+  behavior: Record<string, unknown> = {},
+  extraAnimations: Record<string, unknown> = {},
+  extraAliases: Record<string, string> = {},
+) =>
   resolvePack({
     format: 'blerb-pet/1',
     id: 'test',
@@ -17,8 +21,9 @@ const testPack = (behavior: Record<string, unknown> = {}) =>
       walk: { fps: 8, frames: [2, 3, 2, 0], designSpeed: 40 },
       fall: { fps: 6, frames: [1] },
       land: { fps: 12, loop: false, frames: [1, 0] },
+      ...extraAnimations,
     },
-    aliases: { climb: 'walk', cling: 'idle', sit: 'idle', sleep: 'idle', stretch: 'idle' },
+    aliases: { climb: 'walk', cling: 'idle', sit: 'idle', sleep: 'idle', stretch: 'idle', ...extraAliases },
     behavior,
   });
 
@@ -215,6 +220,149 @@ describe('design contract', () => {
     sim.step(60 * 60 * 1000);
     expect(sim.state.x).toBeGreaterThanOrEqual(0);
     expect(sim.state.x).toBeLessThanOrEqual(800);
+  });
+});
+
+describe('surprise', () => {
+  const surpriseAnim = { surprise: { fps: 3, frames: [0, 1] } };
+
+  it('springs the pack\'s surprise animation now and then, for a few seconds, standing still', () => {
+    const sim = createSim({
+      pack: testPack({ idleWeights: { idle: 6, walk: 4, surprise: 6 } }, surpriseAnim),
+      world: simpleWorld(800, 400),
+      seed: 23,
+    });
+    let bouts = 0;
+    let inBout = false;
+    let movedDuring = false;
+    for (const dt of dtSequence(60_000)) {
+      sim.step(dt);
+      if (sim.state.behavior === 'surprise') {
+        if (!inBout) {
+          bouts++;
+          // Each bout is booked for ~5s: [4000, 6000] × the restlessness
+          // scale (1.2 at the default 0.4). Back-to-back picks can chain,
+          // which is why this checks the booked duration, not wall time.
+          expect(sim.state.behaviorDur).toBeGreaterThanOrEqual(4000);
+          expect(sim.state.behaviorDur).toBeLessThanOrEqual(6000 * 1.2 + 1);
+        }
+        inBout = true;
+        if (Math.abs(sim.state.vx) > 0) movedDuring = true;
+        expect(sim.state.anim).toBe('surprise');
+      } else {
+        inBout = false;
+      }
+    }
+    expect(bouts).toBeGreaterThan(0);
+    expect(movedDuring).toBe(false);
+  });
+
+  it('never happens in a pack that has no surprise animation, whatever the weights say', () => {
+    const sim = createSim({
+      pack: testPack({ idleWeights: { idle: 1, surprise: 100 } }),
+      world: simpleWorld(800, 400),
+      seed: 23,
+    });
+    for (const dt of dtSequence(60_000)) {
+      sim.step(dt);
+      expect(sim.state.behavior).not.toBe('surprise');
+    }
+  });
+
+  it('is rare by default — a flourish every few minutes, not a tic', () => {
+    // Documented rate: SURPRISE_WEIGHT / 14.25 ≈ 1.75% of decisions, so about
+    // that share of time. Averaged over seeds so an rng-order change on an
+    // unrelated edit cannot flip it; the bound is tight enough that doubling
+    // the weight fails it.
+    let surprised = 0;
+    let total = 0;
+    for (const seed of [29, 30, 31, 32]) {
+      const sim = createSim({ pack: testPack({}, surpriseAnim), world: simpleWorld(800, 400), seed });
+      for (const dt of dtSequence(200_000)) {
+        sim.step(dt);
+        total += dt;
+        if (sim.state.behavior === 'surprise') surprised += dt;
+      }
+    }
+    expect(surprised).toBeGreaterThan(0);
+    expect(surprised / total).toBeLessThan(0.03);
+  });
+
+  it('fires for a surprise PROVIDED by an alias to real art — never through the idle fallback', () => {
+    const viaAlias = createSim({
+      pack: testPack({ idleWeights: { idle: 1, surprise: 20 } }, { jump: { fps: 3, frames: [0, 1] } }, { surprise: 'jump' }),
+      world: simpleWorld(800, 400),
+      seed: 5,
+    });
+    const deadAlias = createSim({
+      pack: testPack({ idleWeights: { idle: 1, surprise: 20 } }, {}, { surprise: 'nothing' }),
+      world: simpleWorld(800, 400),
+      seed: 5,
+    });
+    let via = 0;
+    let dead = 0;
+    for (const dt of dtSequence(20_000)) {
+      viaAlias.step(dt);
+      deadAlias.step(dt);
+      if (viaAlias.state.behavior === 'surprise') via++;
+      if (deadAlias.state.behavior === 'surprise') dead++;
+    }
+    expect(via).toBeGreaterThan(0);
+    expect(dead).toBe(0);
+  });
+
+  // Rule 5, by SHAPE: nothing counts, collects or remembers a surprise. If a
+  // counter or timestamp ever sneaks into state, the key set changes.
+  it('rule 5: leaves no trace in state — not a counter, not a timestamp', () => {
+    // Even odds with idle, so bouts alternate rather than chain.
+    const sim = createSim({
+      pack: testPack({ idleWeights: { idle: 6, surprise: 6 } }, surpriseAnim),
+      world: simpleWorld(800, 400),
+      seed: 41,
+    });
+    const stateKeys = Object.keys(sim.state).sort();
+    const snapshotKeys = Object.keys(sim.serialize()).sort();
+    let bouts = 0;
+    let prev = '';
+    for (const dt of dtSequence(20_000)) {
+      sim.step(dt);
+      if (sim.state.behavior === 'surprise' && prev !== 'surprise') bouts++;
+      prev = sim.state.behavior;
+    }
+    expect(bouts).toBeGreaterThan(3);
+    expect(Object.keys(sim.state).sort()).toEqual(stateKeys);
+    expect(Object.keys(sim.serialize()).sort()).toEqual(snapshotKeys);
+  });
+
+  // Rule 6, by DISTRIBUTION (§12): the gaps between surprises must look like
+  // dice, not a schedule — wide spread, and no gap predicting the next.
+  it('rule 6: gaps between surprises are randomised, never periodic', () => {
+    const sim = createSim({
+      pack: testPack({ idleWeights: { idle: 6, walk: 4, surprise: 2 } }, surpriseAnim),
+      world: simpleWorld(800, 400),
+      seed: 43,
+    });
+    const starts: number[] = [];
+    let prev = '';
+    for (const dt of dtSequence(400_000)) {
+      sim.step(dt);
+      if (sim.state.behavior === 'surprise' && prev !== 'surprise') starts.push(sim.state.simT);
+      prev = sim.state.behavior;
+    }
+    const gaps = starts.slice(1).map((t, i) => t - starts[i]!);
+    expect(gaps.length).toBeGreaterThanOrEqual(20);
+    const mean = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+    const sd = Math.sqrt(gaps.reduce((a, g) => a + (g - mean) ** 2, 0) / gaps.length);
+    // A fixed interval with jitter has a small coefficient of variation.
+    expect(sd / mean).toBeGreaterThan(0.4);
+    // Lag-1 autocorrelation: a jittered schedule alternates long/short.
+    let num = 0;
+    let den = 0;
+    for (let i = 0; i < gaps.length; i++) {
+      den += (gaps[i]! - mean) ** 2;
+      if (i > 0) num += (gaps[i]! - mean) * (gaps[i - 1]! - mean);
+    }
+    expect(Math.abs(num / den)).toBeLessThan(0.3);
   });
 });
 

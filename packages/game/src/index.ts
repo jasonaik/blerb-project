@@ -17,3 +17,5 @@ export {
   type Game,
   type GameConfig,
 } from './session.js';
+export { describe, formatDuration, retrospective, type DayKeys, type Retrospective } from './summary.js';
+export { hydrate, KEEP_DAYS, pruneDays } from './persist.js';

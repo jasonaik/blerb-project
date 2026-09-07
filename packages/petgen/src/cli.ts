@@ -28,8 +28,12 @@ Import options
   --speed <anim=px>     from-gif: designSpeed for an animation, e.g. --speed walk=27
                         (feet-lock: the walk cycle stays phase-locked to travel)
   --alias <a=b>         from-gif: manifest alias, e.g. --alias climb=walk (repeatable)
-  --tolerance <t>       from-image: backdrop match strictness 0..1, default 0.1
-  --keep-bg             from-image: skip background removal
+  --tolerance <t>       from-image/from-gif: backdrop match strictness 0..1, default 0.1
+  --keep-bg             from-image/from-gif: skip background removal
+  --height <px>         from-gif: resample SMOOTH art to this content height (pixel art
+                        is never resampled). Default: match any pixel art in the same
+                        import, else keep full resolution with atlas.scale
+  --pixel-art/--smooth  from-image/from-gif: override the pixel-art detection
   --id/--name/--author/--license  pack metadata
 
 Preview options
@@ -44,7 +48,7 @@ result. Input requirements for art are documented in docs/pet-art.md.
  * Flags that never take a value. Without this, `--no-open packs/blob` would
  * swallow the pack directory as the flag's argument.
  */
-const BOOLEAN_FLAGS = new Set(['no-open', 'help', 'debug', 'keep-bg']);
+const BOOLEAN_FLAGS = new Set(['no-open', 'help', 'debug', 'keep-bg', 'pixel-art', 'smooth']);
 
 /** Short aliases, expanded before parsing. */
 const SHORT: Record<string, string> = { '-o': '--out' };
@@ -123,6 +127,12 @@ const intFlag = (args: Args, key: string): number | undefined => {
   const v = args.get(key);
   return v === undefined ? undefined : Number(v);
 };
+
+/** `--pixel-art` / `--smooth` → true / false; neither → undefined (detect). */
+function pixelArtFlag(args: Args): boolean | undefined {
+  if (args.has('pixel-art') && args.has('smooth')) throw new Error('--pixel-art and --smooth contradict each other');
+  return args.has('pixel-art') ? true : args.has('smooth') ? false : undefined;
+}
 
 /** `--speed walk=27 --speed climb=18` → { walk: 27, climb: 18 }. */
 function pairFlags<T>(values: string[], flag: string, coerce: (s: string) => T): Record<string, T> | undefined {
@@ -217,6 +227,10 @@ async function main(): Promise<number> {
         anim: args.get('anim'),
         speeds: pairFlags(args.all('speed'), 'speed', Number),
         aliases: pairFlags(args.all('alias'), 'alias', String),
+        tolerance: args.get('tolerance') !== undefined ? Number(args.get('tolerance')) : undefined,
+        keepBg: args.has('keep-bg'),
+        height: intFlag(args, 'height'),
+        pixelArt: pixelArtFlag(args),
         ...meta(args),
       });
       return finishImport(manifest);
@@ -233,6 +247,7 @@ async function main(): Promise<number> {
         outDir: requireOut(args, command),
         tolerance: args.get('tolerance') !== undefined ? Number(args.get('tolerance')) : undefined,
         keepBg: args.has('keep-bg'),
+        pixelArt: pixelArtFlag(args),
         ...meta(args),
       });
       return finishImport(manifest);

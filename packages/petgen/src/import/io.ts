@@ -83,6 +83,23 @@ export async function countFrames(file: string): Promise<number> {
   return meta.pages ?? 1;
 }
 
+/**
+ * Resample a raster to new dimensions. Lanczos, alpha-aware (sharp
+ * premultiplies for the filter, so cut-out edges don't fringe dark). Used to
+ * bring hi-res smooth art down to the size of the pixel art it shares an
+ * atlas with — a uniform scale of the whole canvas, so a group's frames stay
+ * registered against each other.
+ */
+export async function resampleRaster(r: Raster, w: number, h: number): Promise<Raster> {
+  const { data, info } = await sharp(Buffer.from(r.data.buffer, r.data.byteOffset, r.data.byteLength), {
+    raw: { width: r.w, height: r.h, channels: 4 },
+  })
+    .resize(w, h, { kernel: 'lanczos3', fit: 'fill' })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  return { w: info.width, h: info.height, data: new Uint8Array(data) };
+}
+
 export async function savePng(r: Raster, file: string): Promise<void> {
   await mkdir(dirname(file), { recursive: true });
   const buf = await sharp(Buffer.from(r.data.buffer, r.data.byteOffset, r.data.byteLength), {

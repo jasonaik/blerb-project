@@ -34,6 +34,11 @@
         background: var(--card); color: var(--ink); border: 1px solid var(--line);
         border-radius: 7px; padding: 4px 8px; font: inherit; width: 110px;
       }
+      input[type="text"].wide { width: 170px; }
+      .row.col { flex-direction: column; align-items: stretch; gap: 4px; }
+      .summary { margin: 4px 0 2px; padding-left: 18px; }
+      .summary li { padding: 1px 0; }
+      .summary li.quiet { color: var(--dim); list-style: none; margin-left: -18px; }
       .val { color: var(--dim); font-variant-numeric: tabular-nums; width: 26px; text-align: right; }
       .foot { display: flex; justify-content: space-between; align-items: center; margin-top: 16px; }
       .foot .pack { color: var(--dim); font-size: 12px; }
@@ -113,6 +118,33 @@
       </div>
     </div>
 
+    <div class="card">
+      <div class="row col">
+        <label>Today
+          <span class="hint">After the fact, in plain words. It doesn't tick while you watch — it's read fresh each time this window comes to the front.</span>
+        </label>
+        <ul id="summary" class="summary"></ul>
+      </div>
+      <div class="row">
+        <label for="focusApps">Focus apps
+          <span class="hint">Process names, comma-separated. Time in these counts as focus; a session is a stretch of it.</span>
+        </label>
+        <input type="text" id="focusApps" class="wide" placeholder="code, obsidian, word" />
+      </div>
+      <div class="row">
+        <label for="elsewhereApps">Elsewhere apps
+          <span class="hint">Ships empty on purpose. Anything you don't list is neutral.</span>
+        </label>
+        <input type="text" id="elsewhereApps" class="wide" placeholder="" />
+      </div>
+      <div class="row">
+        <label>Last app in front: <b id="nowApp">—</b>
+          <span class="hint">So you don't have to guess how a program spells its exe. A process name is all blerb ever sees.</span>
+        </label>
+        <button id="nowFocus" disabled>+ focus</button>
+      </div>
+    </div>
+
     <div class="foot">
       <span class="pack"></span>
       <button id="quit">Quit blerb</button>
@@ -122,12 +154,60 @@
       const $ = (id) => document.getElementById(id);
       const bools = ['petVisible', 'captureProtection', 'launchAtLogin', 'climbing', 'hanging', 'smoothTracking', 'debugOverlay'];
 
+      let classification = { focus: [], elsewhere: [] };
       function render(s) {
         for (const k of bools) $(k).checked = s[k];
         $('petScale').value = s.petScale;
         $('petScaleVal').textContent = s.petScale + '×';
         if ([...$('pack').options].some((o) => o.value === s.pack)) $('pack').value = s.pack;
+        classification = s.classification || { focus: [], elsewhere: [] };
+        // Never overwrite a list the user is in the middle of typing.
+        for (const [id, key] of [['focusApps', 'focus'], ['elsewhereApps', 'elsewhere']]) {
+          if (document.activeElement !== $(id)) $(id).value = classification[key].join(', ');
+        }
+        syncNowButton();
       }
+
+      // The same spelling rule main applies before saving: lowercase, no .exe.
+      const norm = (s) => s.trim().toLowerCase().replace(/\.exe$/, '');
+      function syncNowButton() {
+        const now = $('nowApp').textContent;
+        $('nowFocus').disabled = !now || now === '—' || classification.focus.some((f) => norm(f) === norm(now));
+      }
+
+      // ---- the retrospective: pulled when the window comes to the front ----
+      async function refreshSummary() {
+        const [{ lines }, now] = await Promise.all([window.blerbSettings.summary(), window.blerbSettings.currentApp()]);
+        $('summary').replaceChildren(
+          ...lines.map((text, i) => Object.assign(document.createElement('li'), {
+            textContent: text,
+            className: lines.length === 1 && i === 0 && /^Nothing/.test(text) ? 'quiet' : '',
+          })),
+        );
+        $('nowApp').textContent = now || '—';
+        syncNowButton();
+      }
+      refreshSummary();
+      addEventListener('focus', refreshSummary);
+
+      const parseList = (s) => [...new Set(s.split(',').map((x) => x.trim().toLowerCase()).filter(Boolean))];
+      function saveLists() {
+        window.blerbSettings.set({
+          classification: { focus: parseList($('focusApps').value), elsewhere: parseList($('elsewhereApps').value) },
+        });
+      }
+      $('focusApps').addEventListener('change', saveLists);
+      $('elsewhereApps').addEventListener('change', saveLists);
+      $('nowFocus').addEventListener('click', () => {
+        const now = $('nowApp').textContent;
+        if (!now || now === '—') return;
+        const current = parseList($('focusApps').value);
+        if (!current.some((f) => norm(f) === norm(now))) {
+          $('focusApps').value = [...current, now].join(', ');
+          saveLists();
+        }
+        $('nowFocus').disabled = true;
+      });
 
       function refreshPacks() {
         return window.blerbSettings.packs().then((packs) => {

@@ -68,5 +68,13 @@ export const CH = {
   packsList: 'packs:list',
   /** Opens a file picker in main, imports the chosen art as a new pack. */
   packsImport: 'packs:import',
+  /** The retrospective: plain sentences about today, yesterday, this week. Pull only. */
+  gameSummary: 'game:summary',
+  /** Last non-blerb foreground process basename, for the classification editor. */
+  gameCurrentApp: 'game:currentApp',
   appQuit: 'app:quit',
 } as const;
+
+export interface GameSummary {
+  lines: string[];
+}

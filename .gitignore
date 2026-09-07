@@ -7,7 +7,7 @@ out/
 Thumbs.db
 
 # Electron build output
-release/
+release*/
 apps/desktop/build/
 
 # See CLAUDE.md § IP. Third-party character art is never committed.
@@ -16,3 +16,6 @@ packs/*/
 
 # Electron build output
 apps/desktop/dist/
+
+# Local art used to exercise the importers by hand — the tests synthesise their own fixtures.
+test/

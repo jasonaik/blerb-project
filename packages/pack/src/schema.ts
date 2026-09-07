@@ -212,6 +212,8 @@ export const KNOWN_ANIMATIONS = [
   'look',
   'react_happy',
   'sulk',
+  /** Optional flourish the sim plays now and then, for a few seconds. */
+  'surprise',
 ] as const;
 
 export type KnownAnimation = (typeof KNOWN_ANIMATIONS)[number];

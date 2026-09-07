@@ -12,7 +12,7 @@ import { assembleAnimations, fromGif } from './fromGif.js';
 import { fromImage } from './fromImage.js';
 import { diagnosePack } from './doctor.js';
 import { loadRaster } from '../import/io.js';
-import { blit, crop, makeRaster, trimBox, type Raster } from '../import/raster.js';
+import { blit, crop, makeRaster, transparentFraction, trimBox, type Raster } from '../import/raster.js';
 
 /**
  * End-to-end: real files in, a working pack out, `doctor` clean on the result.
@@ -428,6 +428,234 @@ describe('from-gif', () => {
     const raw = JSON.parse(await readFile(join(out, 'pet.json'), 'utf8'));
     const pack = resolvePack(raw);
     expect(pack.animation('climb')).toBe(pack.animation('walk'));
+  });
+
+  /** Smooth art: a soft-edged gradient blob on an OPAQUE white canvas — what a downloaded GIF looks like. */
+  function paintedBlob(w: number, h: number, cx: number, cy: number, r: number): Raster {
+    const out = makeRaster(w, h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        const d = Math.hypot(x - cx, y - cy);
+        if (d <= r) {
+          // Many colours, so it can never vote "pixel art".
+          out.data[i] = 60 + ((x * 7) % 120);
+          out.data[i + 1] = 120 + ((y * 5) % 100);
+          out.data[i + 2] = 200 - ((x + y) % 60);
+        } else {
+          out.data[i] = out.data[i + 1] = out.data[i + 2] = 255;
+        }
+        out.data[i + 3] = 255;
+      }
+    }
+    return out;
+  }
+
+  it('cuts the backdrop out of an opaque hi-res GIF and scales it to pet size', async () => {
+    // Two 300x400 frames on solid white; frame 2 sits 12px higher (a jump).
+    const a = paintedBlob(300, 400, 150, 260, 110);
+    const b = paintedBlob(300, 400, 150, 248, 110);
+    const file = join(tmp, 'opaque-jump.webp');
+    await writeAnimated(file, [a, b], [330, 330], 'webp');
+
+    const out = join(tmp, 'opaque-pet');
+    await fromGif({ inputs: [file], outDir: out });
+
+    const d = await diagnosePack(out);
+    expect(d.errors).toBe(0);
+
+    const manifest = (await readManifest(out)) as EmittedManifest & { atlas: { scale?: number } };
+    expect(manifest.pixelArt).toBe(false);
+    // The white is gone: the cells are the blob's size, not the canvas's.
+    expect(manifest.grid.h).toBeLessThan(260);
+    expect(manifest.grid.h).toBeGreaterThan(200);
+    // Hi-res: full pixels kept, atlas.scale brings it to ~64px on screen.
+    const scale = manifest.atlas.scale ?? 1;
+    expect(scale).toBeGreaterThan(3);
+    expect(scale).toBeLessThan(4.5);
+    expect(Math.abs(manifest.grid.h / scale - 64)).toBeLessThan(12);
+    const atlas = await loadRaster(join(out, 'atlas.png'));
+    expect(transparentFraction(atlas)).toBeGreaterThan(0.2);
+    // Registration survived the per-frame cut: the jump is still 12px.
+    expect(manifest.animations['opaque-jump']!.frames).toEqual([0, 1]);
+  });
+
+  it('brings hi-res smooth art down to the size of the pixel art it shares an atlas with', async () => {
+    const walkFrames = [0, 1, 2].map((i) => {
+      const r = makeRaster(20, 20);
+      rect(r, 2 + i * 3, 8, 8 + i * 3, 19);
+      return r;
+    });
+    const walk = join(tmp, 'mix-walk.webp');
+    await writeAnimated(walk, walkFrames, [100, 100, 100], 'webp');
+    const jump = join(tmp, 'mix-jump.webp');
+    await writeAnimated(jump, [paintedBlob(300, 400, 150, 260, 110), paintedBlob(300, 400, 150, 248, 110)], [330, 330], 'webp');
+
+    const out = join(tmp, 'mix-pet');
+    await fromGif({ inputs: [walk, jump], animNames: ['walk', 'surprise'], outDir: out });
+
+    const manifest = (await readManifest(out)) as EmittedManifest & { atlas: { scale?: number } };
+    expect(manifest.atlas.scale).toBeUndefined();
+    expect(manifest.pixelArt).toBe(true);
+    // The 400px canvas came down to the walk's 12px content height, not the other way round.
+    expect(manifest.grid.h).toBeLessThan(24);
+    expect(manifest.grid.count).toBe(5);
+    expect(Object.keys(manifest.animations).sort()).toEqual(['surprise', 'walk']);
+  });
+
+  /** Pixel art as a sprite site serves it: few colours, 1px outline, flattened onto opaque white. */
+  function outlinedSprite(w: number, h: number, dx: number): Raster {
+    const out = makeRaster(w, h);
+    out.data.fill(255); // opaque white canvas
+    const x0 = 4 + dx, y0 = 5, x1 = w - 6 + dx, y1 = h - 3;
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const i = (y * w + x) * 4;
+        const edge = x === x0 || x === x1 || y === y0 || y === y1;
+        out.data[i] = edge ? 20 : 90;
+        out.data[i + 1] = edge ? 20 : 200;
+        out.data[i + 2] = edge ? 20 : 120;
+        out.data[i + 3] = 255;
+      }
+    }
+    // An odd-length feature so no run-GCD can call it upscaled.
+    out.data[((y0 + 3) * w + x0 + 3) * 4] = 250;
+    return out;
+  }
+
+  /** Flat-colour blob with an ANTI-ALIASED edge on opaque white — smooth art with few colours. */
+  function aaBlob(w: number, h: number, cx: number, cy: number, r: number): Raster {
+    const out = makeRaster(w, h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        const cover = Math.max(0, Math.min(1, r + 0.5 - Math.hypot(x - cx, y - cy)));
+        out.data[i] = Math.round(255 - cover * (255 - 80));
+        out.data[i + 1] = Math.round(255 - cover * (255 - 140));
+        out.data[i + 2] = Math.round(255 - cover * (255 - 220));
+        out.data[i + 3] = 255;
+      }
+    }
+    return out;
+  }
+
+  async function alphaValues(dir: string): Promise<Set<number>> {
+    const atlas = await loadRaster(join(dir, 'atlas.png'));
+    const seen = new Set<number>();
+    for (let i = 3; i < atlas.data.length; i += 4) seen.add(atlas.data[i]!);
+    return seen;
+  }
+
+  it('keeps opaque-backdrop pixel art as pixel art: hard cut, no halo, native cells', async () => {
+    const file = join(tmp, 'flat-walk.webp');
+    await writeAnimated(file, [outlinedSprite(32, 30, 0), outlinedSprite(32, 30, 2)], [100, 100], 'webp');
+
+    const out = join(tmp, 'flat-pixel-pet');
+    await fromGif({ inputs: [file], outDir: out });
+
+    const manifest = (await readManifest(out)) as EmittedManifest & { atlas: { scale?: number } };
+    expect(manifest.pixelArt).toBe(true);
+    expect(manifest.atlas.scale).toBeUndefined();
+    // The cut is binary — no erode ran, so no half-alpha outline.
+    const alphas = [...(await alphaValues(out))].sort((a, b) => a - b);
+    expect(alphas).toEqual([0, 255]);
+    // Native: content is exactly the sprite's 23 rows (y 5..27).
+    expect(contentDims(await loadRaster(join(out, 'atlas.png')), manifest, 0).h).toBe(23);
+  });
+
+  it('keeps a flat-colour anti-aliased blob on white as smooth art (the suppression still holds)', async () => {
+    const file = join(tmp, 'aa-blob.webp');
+    await writeAnimated(file, [aaBlob(60, 60, 30, 32, 20), aaBlob(60, 60, 30, 30, 20)], [100, 100], 'webp');
+
+    const out = join(tmp, 'aa-pet');
+    await fromGif({ inputs: [file], outDir: out });
+    const manifest = await readManifest(out);
+    expect(manifest.pixelArt).toBe(false);
+    // Eroded edge: intermediate alphas exist.
+    expect([...(await alphaValues(out))].some((a) => a > 0 && a < 255)).toBe(true);
+  });
+
+  it('any pixel art in the atlas makes the pack pixel art', async () => {
+    const walk = join(tmp, 'maj-walk.webp');
+    await writeAnimated(walk, [outlinedSprite(32, 30, 0), outlinedSprite(32, 30, 2)], [100, 100], 'webp');
+    const idle = join(tmp, 'maj-idle.webp');
+    await writeAnimated(idle, [paintedBlob(300, 400, 150, 260, 110)], [330], 'webp');
+    const jump = join(tmp, 'maj-jump.webp');
+    await writeAnimated(jump, [paintedBlob(300, 400, 150, 248, 110)], [330], 'webp');
+
+    const out = join(tmp, 'maj-pet');
+    await fromGif({ inputs: [walk, idle, jump], animNames: ['walk', 'idle', 'surprise'], outDir: out });
+    const manifest = (await readManifest(out)) as EmittedManifest & { atlas: { scale?: number } };
+    expect(manifest.pixelArt).toBe(true);
+    expect(manifest.atlas.scale).toBeUndefined();
+  });
+
+  it('leaves a near-size "smooth" sibling alone instead of Lanczos-mangling it', async () => {
+    // A 22-row sprite with >64 colours and authored transparency: only the
+    // binary-alpha vote fires, so it reads smooth — but it is not hi-res art.
+    const many = makeRaster(30, 30);
+    for (let y = 4; y < 26; y++) {
+      for (let x = 3; x < 27; x++) {
+        const i = (y * 30 + x) * 4;
+        many.data[i] = (x * 37) % 256;
+        many.data[i + 1] = (y * 53) % 256;
+        many.data[i + 2] = ((x + y) * 29) % 256;
+        many.data[i + 3] = 255;
+      }
+    }
+    const walk = join(tmp, 'near-walk.webp');
+    await writeAnimated(walk, [outlinedSprite(32, 30, 0), outlinedSprite(32, 30, 2)], [100, 100], 'webp');
+    const idle = join(tmp, 'near-idle.webp');
+    await writeAnimated(idle, [many], [100], 'webp');
+
+    const out = join(tmp, 'near-pet');
+    await fromGif({ inputs: [walk, idle], animNames: ['walk', 'idle'], outDir: out });
+    const manifest = await readManifest(out);
+    const atlas = await loadRaster(join(out, 'atlas.png'));
+    // Cell 2 is the idle: still exactly 22 rows, untouched.
+    expect(contentDims(atlas, manifest, 2)).toEqual({ w: 24, h: 22 });
+    expect([...(await alphaValues(out))].sort((a, b) => a - b)).toEqual([0, 255]);
+  });
+
+  it('brings smooth-only files at different resolutions to one scale', async () => {
+    const big = join(tmp, 'so-walk.webp');
+    await writeAnimated(big, [paintedBlob(300, 400, 150, 260, 110), paintedBlob(300, 400, 150, 248, 110)], [100, 100], 'webp');
+    const small = join(tmp, 'so-idle.webp');
+    await writeAnimated(small, [paintedBlob(150, 200, 75, 130, 55)], [100], 'webp');
+
+    const out = join(tmp, 'so-pet');
+    await fromGif({ inputs: [big, small], animNames: ['walk', 'idle'], outDir: out });
+    const manifest = await readManifest(out);
+    const atlas = await loadRaster(join(out, 'atlas.png'));
+    // The 221px walk came down to the 111px idle, not the other way round.
+    // (A few px of slack: the resample scales the canvas, and the erode
+    // trims each file's cut edge independently.)
+    const walkH = contentDims(atlas, manifest, 0).h;
+    const idleH = contentDims(atlas, manifest, 2).h;
+    expect(Math.abs(walkH - idleH)).toBeLessThanOrEqual(8);
+    expect(walkH).toBeLessThan(130);
+  });
+
+  it('--height resamples smooth art to an explicit size, and never touches pixel art', async () => {
+    const walkFrames = [0, 1].map((i) => {
+      const r = makeRaster(20, 20);
+      rect(r, 2 + i * 3, 8, 8 + i * 3, 19);
+      return r;
+    });
+    const walk = join(tmp, 'h-walk.webp');
+    await writeAnimated(walk, walkFrames, [100, 100], 'webp');
+    const jump = join(tmp, 'h-jump.webp');
+    await writeAnimated(jump, [paintedBlob(300, 400, 150, 260, 110)], [330], 'webp');
+
+    const out = join(tmp, 'h-pet');
+    await fromGif({ inputs: [walk, jump], animNames: ['walk', 'surprise'], height: 40, outDir: out });
+    const manifest = await readManifest(out);
+    // Cell height is the tallest content + padding: the 40px blob, not the 12px walk.
+    expect(manifest.grid.h).toBeGreaterThanOrEqual(40);
+    expect(manifest.grid.h).toBeLessThan(46);
+    // And the walk's content is still exactly 12 rows tall.
+    const atlas = await loadRaster(join(out, 'atlas.png'));
+    expect(contentDims(atlas, manifest, 0).h).toBe(12);
   });
 
   it('preserves held poses: a frame with 3x the modal delay plays three times', async () => {

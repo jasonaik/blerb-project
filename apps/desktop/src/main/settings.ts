@@ -1,6 +1,7 @@
 import { app } from 'electron';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { normalizeApp } from '@blerb/game';
 import type { Settings } from '../shared/ipc';
 
 export const DEFAULTS: Settings = {
@@ -34,8 +35,14 @@ export function settingsFileExists(): boolean {
  * Anything that isn't a string array degrades to the empty list rather than
  * throwing once a second inside the observer's poll.
  */
+// Normalized at the persistence boundary — the same normalizeApp the reducer
+// applies to what it observes — so a pasted "C:\...\Code.exe" is stored as
+// "code", not as a path in settings.json (§11), and matches the way the
+// observer reports the same program back.
 const strList = (x: unknown): string[] =>
-  Array.isArray(x) ? x.filter((s): s is string => typeof s === 'string') : [];
+  Array.isArray(x)
+    ? [...new Set(x.filter((s): s is string => typeof s === 'string').map(normalizeApp).filter(Boolean))]
+    : [];
 
 export function sanitizeClassification(x: unknown): Settings['classification'] {
   const c = (x ?? {}) as Record<string, unknown>;

@@ -121,17 +121,8 @@ export async function diagnosePack(packDir: string): Promise<Diagnosis> {
   // --- animations ----------------------------------------------------------
   // "Missing" means neither provided nor deliberately aliased to something
   // that exists — those are the ones that silently land on the idle fallback.
-  const reachable = (name: string): boolean => {
-    let cursor = name;
-    for (let hops = 0; hops < 8; hops++) {
-      if (pack.animations.has(cursor)) return true;
-      const next = pack.manifest.aliases[cursor];
-      if (next === undefined) return false;
-      cursor = next;
-    }
-    return false;
-  };
-  const missing = KNOWN_ANIMATIONS.filter((name) => !reachable(name));
+  // The same `has` the sim uses, so doctor and the sim can never disagree.
+  const missing = KNOWN_ANIMATIONS.filter((name) => !pack.has(name));
   if (missing.length > 0) {
     info(
       `not provided (falls back gracefully): ${missing.join(', ')} — ` +
@@ -142,7 +133,7 @@ export async function diagnosePack(packDir: string): Promise<Diagnosis> {
   for (const [from, to] of Object.entries(pack.manifest.aliases)) {
     // Walk the whole chain — a one-hop check let an alias CYCLE (a→b, b→a,
     // neither real) pass silently, which is deader than a plain dead alias.
-    if (!reachable(to)) {
+    if (!pack.has(to)) {
       warn(`alias "${from}" points at "${to}", which never reaches a real animation — it will use the fallback`);
     }
   }

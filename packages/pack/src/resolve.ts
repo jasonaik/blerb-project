@@ -62,6 +62,14 @@ export interface ResolvedPack {
    * slightly wrong, not take the app down.
    */
   animation(name: string): ResolvedAnimation;
+  /**
+   * Whether `name` is PROVIDED — a real animation, or an alias chain that
+   * reaches one. False for a dead alias and for anything that would only
+   * resolve through the idle fallback. The sim uses this to decide whether
+   * an optional flourish exists at all; `animation()` alone cannot say,
+   * because it never returns "no".
+   */
+  has(name: string): boolean;
   cell(id: string): ResolvedCell;
 }
 
@@ -190,6 +198,17 @@ export function resolvePack(input: unknown, manifestUrl = './pet.json'): Resolve
         cursor = next;
       }
       return fallback;
+    },
+
+    has(name: string): boolean {
+      let cursor = name;
+      for (let hops = 0; hops < 8; hops++) {
+        if (animations.has(cursor)) return true;
+        const next = m.aliases[cursor];
+        if (next === undefined) return false;
+        cursor = next;
+      }
+      return false;
     },
 
     cell(id: string): ResolvedCell {

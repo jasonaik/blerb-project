@@ -138,6 +138,16 @@ export interface DetectOptions {
    * pixel-art vote, and flat-colour smooth art misdetected as pixel art.
    */
   alphaSynthetic?: boolean;
+  /**
+   * With `alphaSynthetic`: the flood fill reports that the backdrop met the
+   * art in a hard step (every removed pixel sat on the backdrop colour — no
+   * anti-aliased fringe). That is exactly the evidence the binary-alpha vote
+   * stood for, still observable in the RGB, so the vote is restored instead
+   * of thrown away. Without it, NATIVE-resolution pixel art on a flattened
+   * backdrop could never vote pixel art (its run GCD is 1 by definition) and
+   * got eroded and bilinear-smoothed.
+   */
+  hardEdge?: boolean;
 }
 
 export function detectForImport(
@@ -148,8 +158,10 @@ export function detectForImport(
   if (!first) return { pixelArt: false, scale: 1, votes: { fewColours: false, binaryAlpha: false, gridRuns: false } };
   const suppress = (v: PixelArtVerdict): PixelArtVerdict => {
     if (!opts.alphaSynthetic || !v.votes.binaryAlpha) return v;
-    const votes = { ...v.votes, binaryAlpha: false };
-    const count = (votes.fewColours ? 1 : 0) + (votes.gridRuns ? 1 : 0);
+    // A synthesized channel is binary by construction — but the cut being
+    // HARD is real evidence the caller may have, and it stands in.
+    const votes = { ...v.votes, binaryAlpha: opts.hardEdge === true };
+    const count = (votes.fewColours ? 1 : 0) + (votes.gridRuns ? 1 : 0) + (votes.binaryAlpha ? 1 : 0);
     const pixelArt = count >= 2;
     return { pixelArt, scale: pixelArt ? v.scale : 1, votes };
   };

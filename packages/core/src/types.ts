@@ -132,7 +132,13 @@ export type BehaviorId =
   /** Attached to a wall but stationary — deciding, or resting. */
   | 'cling'
   /** Upside down on the underside of something, walking along it. */
-  | 'hang';
+  | 'hang'
+  /**
+   * A rare flourish: the pack's `surprise` animation, played for a few
+   * seconds and then forgotten. Only packs that ship one ever do it, and
+   * nothing counts, collects or announces it (design contract rule 5).
+   */
+  | 'surprise';
 
 export type PetEvent =
   | { k: 'world'; world: World }

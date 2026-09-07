@@ -71,9 +71,11 @@ export function createOverlayWindow(display: Display, opts: OverlayOptions): Bro
 
 export function createSettingsWindow(): BrowserWindow {
   const win = new BrowserWindow({
-    width: 420,
-    height: 640,
-    resizable: false,
+    width: 440,
+    height: 820,
+    minWidth: 400,
+    minHeight: 480,
+    resizable: true,
     maximizable: false,
     autoHideMenuBar: true,
     title: 'blerb',
