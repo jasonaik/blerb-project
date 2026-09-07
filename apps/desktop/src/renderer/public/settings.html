@@ -84,6 +84,20 @@
         <input type="text" id="importName" placeholder="name (optional)" />
         <button id="importBtn">Choose files…</button>
       </div>
+      <div class="row">
+        <label for="addAnimBtn">Add art to this pet
+          <span class="hint">One animated GIF. <b>surprise</b> plays on its own now and then; <b>interact</b> plays for a few seconds when your cursor touches the pet.</span>
+        </label>
+        <select id="addAnimSlot">
+          <option value="surprise">surprise</option>
+          <option value="interact">interact</option>
+          <option value="idle">idle</option>
+          <option value="walk">walk</option>
+          <option value="sit">sit</option>
+          <option value="sleep">sleep</option>
+        </select>
+        <button id="addAnimBtn">Choose GIF…</button>
+      </div>
       <div class="row" id="importStatusRow" hidden>
         <span class="hint" id="importStatus"></span>
       </div>
@@ -221,6 +235,25 @@
       refreshPacks();
       window.blerbSettings.onChange(render);
       $('pack').addEventListener('change', (e) => window.blerbSettings.set({ pack: e.target.value }));
+
+      $('addAnimBtn').addEventListener('click', async () => {
+        const status = $('importStatus');
+        const slot = $('addAnimSlot').value;
+        $('addAnimBtn').disabled = true;
+        $('importStatusRow').hidden = false;
+        status.textContent = `adding ${slot}…`;
+        try {
+          const r = await window.blerbSettings.addAnimation(slot);
+          if (r.canceled) { $('importStatusRow').hidden = true; return; }
+          status.textContent = r.ok
+            ? (slot === 'interact' ? `Added ${slot} — touch the pet with your cursor.` : slot === 'surprise' ? `Added ${slot} — it plays on its own now and then.` : `Added ${slot}.`) + (r.warning ? ' ' + r.warning : '')
+            : (r.error || 'could not add the animation');
+        } catch (err) {
+          status.textContent = 'could not add the animation: ' + (err && err.message ? err.message : err);
+        } finally {
+          $('addAnimBtn').disabled = false;
+        }
+      });
 
       $('importBtn').addEventListener('click', async () => {
         const status = $('importStatus');

@@ -6,6 +6,7 @@ import { fromSheet } from './commands/fromSheet.js';
 import { fromFrames } from './commands/fromFrames.js';
 import { fromGif } from './commands/fromGif.js';
 import { fromImage } from './commands/fromImage.js';
+import { addAnimations } from './commands/addAnim.js';
 
 const USAGE = `
 petgen — pet pack tooling
@@ -16,6 +17,9 @@ petgen — pet pack tooling
   petgen from-frames <dir>     import a folder of frames
   petgen from-gif <gif>...     import animated GIF/WebP (one animation per file)
   petgen from-image <png|jpg>  import ONE picture; a procedural rig makes it walk
+  petgen add-anim <packDir> <gif>...   append animation(s) to an EXISTING pack —
+                               how a surprise.gif or interact.gif gets onto the pet
+                               you already use (name from the file, or --anim)
 
 Import options
   -o, --out <dir>       output pack directory (required; its name becomes the id)
@@ -232,6 +236,29 @@ async function main(): Promise<number> {
         height: intFlag(args, 'height'),
         pixelArt: pixelArtFlag(args),
         ...meta(args),
+      });
+      return finishImport(manifest);
+    }
+
+    case 'add-anim': {
+      const [packDir, ...inputs] = rest;
+      if (!packDir || inputs.length === 0) {
+        console.error('petgen add-anim: needs a pack and animated image(s), e.g. petgen add-anim packs/x surprise.gif');
+        return 1;
+      }
+      const anim = args.get('anim');
+      if (anim && inputs.length > 1) {
+        console.error('petgen add-anim: --anim names a single animation — with several inputs, name the files instead');
+        return 1;
+      }
+      const manifest = await addAnimations({
+        packDir: userPath(packDir),
+        inputs: inputs.map(userPath),
+        animNames: anim ? [anim] : undefined,
+        tolerance: args.get('tolerance') !== undefined ? Number(args.get('tolerance')) : undefined,
+        keepBg: args.has('keep-bg'),
+        height: intFlag(args, 'height'),
+        pixelArt: pixelArtFlag(args),
       });
       return finishImport(manifest);
     }

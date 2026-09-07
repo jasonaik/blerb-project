@@ -214,6 +214,8 @@ export const KNOWN_ANIMATIONS = [
   'sulk',
   /** Optional flourish the sim plays now and then, for a few seconds. */
   'surprise',
+  /** Optional reaction to the cursor resting on the pet. */
+  'interact',
 ] as const;
 
 export type KnownAnimation = (typeof KNOWN_ANIMATIONS)[number];

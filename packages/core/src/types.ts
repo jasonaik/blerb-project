@@ -138,10 +138,20 @@ export type BehaviorId =
    * seconds and then forgotten. Only packs that ship one ever do it, and
    * nothing counts, collects or announces it (design contract rule 5).
    */
-  | 'surprise';
+  | 'surprise'
+  /**
+   * The cursor TOUCHED the pet and the pack has an `interact` animation: it
+   * stops and plays it for 4–6s, then goes back to its business — whether
+   * the cursor stayed or left. Only a fresh touch (leave, come back) starts
+   * another. The user's own action, answered — never initiated, never
+   * rewarded, and nothing happens to someone who never hovers (rules 6, 1, 7).
+   */
+  | 'interact';
 
 export type PetEvent =
   | { k: 'world'; world: World }
+  /** Host hit-test: the cursor is (or is no longer) over the sprite. */
+  | { k: 'hover'; over: boolean }
   | { k: 'pointer'; x: number; y: number; kind: 'move' | 'down' | 'up' }
   | { k: 'hide'; reason: HideReason }
   | { k: 'show' }
@@ -205,6 +215,14 @@ export interface PetState {
   rng: number;
 
   hidden: boolean;
+  /** The host says the cursor is on the sprite. Never persisted. */
+  hovered: boolean;
+  /**
+   * A touch that has not been answered yet: set on the hover-on edge, cleared
+   * when `interact` starts or the cursor leaves. Lets a pet touched mid-air
+   * answer once it lands, and makes a resting cursor a single touch.
+   */
+  hoverArmed: boolean;
   /** World.rev the state was last reconciled against. */
   worldRev: number;
 }

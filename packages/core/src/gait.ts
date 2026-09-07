@@ -72,7 +72,10 @@ export function applyGait(
   let sy = 1;
   let lean = 0;
 
-  if (upright && s.behavior === 'walk') {
+  // The procedural walk exists for a pack with ONE drawing. A pack that has
+  // real walk frames — gained by add-anim, or hand-authored beside a rig —
+  // plays them undeformed; breathing and the land squash still apply.
+  if (upright && s.behavior === 'walk' && !pack.has('walk')) {
     const g = gait(rig, 'walk');
     // Phase from DISTANCE, not time: two footfalls per stride, feet locked to
     // the ground, so the cycle can never treadmill or skate.

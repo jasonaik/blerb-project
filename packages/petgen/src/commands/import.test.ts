@@ -10,9 +10,10 @@ import { fromSheet } from './fromSheet.js';
 import { fromFrames } from './fromFrames.js';
 import { assembleAnimations, fromGif } from './fromGif.js';
 import { fromImage } from './fromImage.js';
+import { addAnimations } from './addAnim.js';
 import { diagnosePack } from './doctor.js';
 import { loadRaster } from '../import/io.js';
-import { blit, crop, makeRaster, transparentFraction, trimBox, type Raster } from '../import/raster.js';
+import { blit, crop, makeRaster, sameRaster, transparentFraction, trimBox, type Raster } from '../import/raster.js';
 
 /**
  * End-to-end: real files in, a working pack out, `doctor` clean on the result.
@@ -636,6 +637,131 @@ describe('from-gif', () => {
     expect(walkH).toBeLessThan(130);
   });
 
+  it('add-anim appends to an existing pack, leaving every existing cell pixel-identical', async () => {
+    const walkFrames = [0, 1, 2].map((i) => {
+      const r = makeRaster(20, 20);
+      rect(r, 2 + i * 3, 8, 8 + i * 3, 19);
+      return r;
+    });
+    const walk = join(tmp, 'aa-walk.webp');
+    await writeAnimated(walk, walkFrames, [100, 100, 100], 'webp');
+    const out = join(tmp, 'aa-pet');
+    await fromGif({ inputs: [walk], animNames: ['walk'], outDir: out, speeds: { walk: 40 }, aliases: { climb: 'walk' } });
+    const before = await readManifest(out);
+    const beforeAtlas = await loadRaster(join(out, 'atlas.png'));
+    const beforeCells = [0, 1, 2].map((i) => {
+      const c = cellAt(before, i);
+      return crop(beforeAtlas, c.x, c.y, c.w, c.h);
+    });
+
+    // A hi-res opaque flourish, added as `surprise`.
+    const jump = join(tmp, 'aa-jump.webp');
+    await writeAnimated(jump, [paintedBlob(300, 400, 150, 260, 110), paintedBlob(300, 400, 150, 248, 110)], [330, 330], 'webp');
+    await addAnimations({ packDir: out, inputs: [jump], animNames: ['surprise'] });
+
+    const d = await diagnosePack(out);
+    expect(d.errors).toBe(0);
+    const after = (await readManifest(out)) as EmittedManifest & {
+      animations: Record<string, { frames: number[]; fps: number; designSpeed?: number }>;
+      aliases?: Record<string, string>;
+    };
+    expect(Object.keys(after.animations).sort()).toEqual(['surprise', 'walk']);
+    expect(after.animations['walk']).toEqual(before.animations['walk']);
+    expect(after.animations['walk']!.designSpeed).toBe(40);
+    expect(after.aliases).toEqual({ climb: 'walk' });
+    expect(after.animations['surprise']!.frames).toEqual([3, 4]);
+    expect(after.grid.count).toBe(5);
+    expect(after.pixelArt).toBe(true);
+
+    // The atlas was versioned, not overwritten: the manifest names the new file.
+    const afterRaw = JSON.parse(await readFile(join(out, 'pet.json'), 'utf8')) as { atlas: { src: string } };
+    expect(afterRaw.atlas.src).toBe('atlas-1.png');
+
+    // Existing cells: byte-identical content, same place relative to the anchor.
+    const afterAtlas = await loadRaster(join(out, afterRaw.atlas.src));
+    for (let i = 0; i < 3; i++) {
+      const c = cellAt(after, i);
+      const cell = crop(afterAtlas, c.x, c.y, c.w, c.h);
+      const oldBox = trimBox(beforeCells[i]!)!;
+      const newBox = trimBox(cell)!;
+      // Anchor-relative position: (x - w/2, y - (h-1)) must match.
+      expect(newBox.x0 - c.w / 2).toBe(oldBox.x0 - before.grid.w / 2);
+      expect(newBox.y1 - (c.h - 1)).toBe(oldBox.y1 - (before.grid.h - 1));
+      expect(
+        sameRaster(
+          crop(cell, newBox.x0, newBox.y0, newBox.x1 - newBox.x0 + 1, newBox.y1 - newBox.y0 + 1),
+          crop(beforeCells[i]!, oldBox.x0, oldBox.y0, oldBox.x1 - oldBox.x0 + 1, oldBox.y1 - oldBox.y0 + 1),
+        ),
+      ).toBe(true);
+    }
+    // The flourish came down to the pack's 12px content height.
+    expect(contentDims(afterAtlas, after, 3).h).toBeLessThanOrEqual(14);
+
+    // Further adds of walk-sized art cannot grow the cell: the box is the
+    // content's own, so padding cannot accumulate pass after pass. (The
+    // FIRST re-layout may settle a pixel smaller — a fresh import pads a
+    // fractional anchor with ceil, the re-layout has an integer one — but
+    // after that the size is fixed.)
+    await addAnimations({ packDir: out, inputs: [walk], animNames: ['extra'] });
+    const again = await readManifest(out);
+    expect(again.grid.w).toBeLessThanOrEqual(after.grid.w);
+    expect(again.grid.h).toBeLessThanOrEqual(after.grid.h);
+    await addAnimations({ packDir: out, inputs: [walk], animNames: ['extra2'] });
+    const third = await readManifest(out);
+    expect([third.grid.w, third.grid.h]).toEqual([again.grid.w, again.grid.h]);
+    expect(third.grid.count).toBe(11);
+    expect((await diagnosePack(out)).errors).toBe(0);
+  });
+
+  it('add-anim refuses an odd grid width rather than moving a half-pixel anchor', async () => {
+    const dir = join(tmp, 'odd-pack');
+    await mkdir(dir, { recursive: true });
+    const sheet = makeRaster(33, 32);
+    rect(sheet, 10, 10, 22, 31);
+    await writePng(sheet, join(dir, 'atlas.png'));
+    await writeFile(
+      join(dir, 'pet.json'),
+      JSON.stringify({
+        format: 'blerb-pet/1',
+        id: 'odd',
+        name: 'Odd',
+        atlas: { src: 'atlas.png' },
+        grid: { w: 33, h: 32, cols: 1 },
+        animations: { idle: { fps: 1, frames: [0] } },
+      }),
+    );
+    const jump = join(tmp, 'odd-jump.webp');
+    await writeAnimated(jump, [paintedBlob(300, 400, 150, 260, 110)], [330], 'webp');
+    await expect(addAnimations({ packDir: dir, inputs: [jump], animNames: ['surprise'] })).rejects.toThrow(/even grid width/);
+  });
+
+  it('add-anim brings smooth art UP to a smooth pack\'s size — a smaller file must not become a speck', async () => {
+    const big = join(tmp, 'sp-walk.webp');
+    await writeAnimated(big, [paintedBlob(300, 400, 150, 260, 110), paintedBlob(300, 400, 150, 248, 110)], [100, 100], 'webp');
+    const out = join(tmp, 'sp-pet');
+    await fromGif({ inputs: [big], animNames: ['walk'], outDir: out });
+    const before = (await readManifest(out)) as EmittedManifest & { atlas: { scale?: number } };
+    expect(before.atlas.scale).toBeGreaterThan(3);
+
+    const small = join(tmp, 'sp-small.webp');
+    await writeAnimated(small, [paintedBlob(80, 100, 40, 60, 25)], [100], 'webp');
+    await addAnimations({ packDir: out, inputs: [small], animNames: ['surprise'] });
+    const after = (await readManifest(out)) as EmittedManifest & { atlas: { scale?: number } };
+    expect(after.atlas.scale).toBe(before.atlas.scale);
+    const atlas = await loadRaster(join(out, (JSON.parse(await readFile(join(out, 'pet.json'), 'utf8')) as { atlas: { src: string } }).atlas.src));
+    const walkH = contentDims(atlas, after, 0).h;
+    const surpriseH = contentDims(atlas, after, 2).h;
+    expect(Math.abs(surpriseH - walkH)).toBeLessThanOrEqual(6);
+  });
+
+  it('add-anim refuses a name the pack already has', async () => {
+    const walk = join(tmp, 'ab-walk.webp');
+    await writeAnimated(walk, [raggedSprite(20, 20, 1), raggedSprite(20, 20, 2)], [100, 100], 'webp');
+    const out = join(tmp, 'ab-pet');
+    await fromGif({ inputs: [walk], animNames: ['walk'], outDir: out });
+    await expect(addAnimations({ packDir: out, inputs: [walk], animNames: ['walk'] })).rejects.toThrow(/already has/);
+  });
+
   it('--height resamples smooth art to an explicit size, and never touches pixel art', async () => {
     const walkFrames = [0, 1].map((i) => {
       const r = makeRaster(20, 20);
@@ -829,7 +955,7 @@ describe('from-image', () => {
       // (correctly) still neutral.
       hangingOn: null, behavior: 'walk' as const, behaviorT: 500, behaviorDur: 1000,
       anim: 'walk', animT: 0, simT: 0, odometer: 0, motionEma: 0, rng: 1,
-      hidden: false, worldRev: 0,
+      hidden: false, hovered: false, hoverArmed: false, worldRev: 0,
     };
     const contact = deriveFrame(pack, base);
     const apex = deriveFrame(pack, { ...base, odometer: stride / 4 });

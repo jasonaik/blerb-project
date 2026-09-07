@@ -8,6 +8,7 @@
  */
 
 export { fromGif, type FromGifOptions } from './commands/fromGif.js';
+export { addAnimations, type AddAnimOptions } from './commands/addAnim.js';
 export { fromImage, type FromImageOptions } from './commands/fromImage.js';
 export { fromSheet, type FromSheetOptions } from './commands/fromSheet.js';
 export { fromFrames, type FromFramesOptions } from './commands/fromFrames.js';

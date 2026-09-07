@@ -33,6 +33,12 @@ are tightly cropped to the character (every frame a different size), the
 importer falls back to aligning each frame by its own feet, which usually
 works but can jitter by a pixel.
 
+## Climb and cling art is drawn sideways
+
+On a wall the renderer rotates the sprite a quarter turn about its anchor. In cell space that makes the **bottom edge the wall** and **+x the direction of travel along it** — so a climb pose is a creature hugging the ground and reaching to its right, not a creature standing up. Two things go wrong when climb art is drawn upright: eyes spread across the cell's width end up one above the other on screen (stack them vertically instead), and a limb placed past the body's taper renders as a detached blob (overlap the body).
+
+If you only have an upright walk, don't add it as `climb`. Alias `climb` to `walk` instead — the rotation makes a side-view walk read as scaling the wall, Shimeji-style — which is what the importers do by default.
+
 ## How the anchor is derived
 
 The pet's position is always its **ground anchor** — the point between its

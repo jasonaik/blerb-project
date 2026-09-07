@@ -37,6 +37,8 @@ export interface Settings {
 export interface OverlayInit {
   /** Forward slashes, absolute. */
   packDir: string;
+  /** Bumped when the pack's FILES change in place (an animation was added) — same dir, new art. */
+  artRev: number;
   /**
    * This window's display origin in global DIP coordinates. The pet's position
    * is global; the renderer subtracts this to draw. That's what lets a pet
@@ -68,6 +70,8 @@ export const CH = {
   packsList: 'packs:list',
   /** Opens a file picker in main, imports the chosen art as a new pack. */
   packsImport: 'packs:import',
+  /** Opens a file picker in main, adds ONE animated file to the current pet as the named animation. */
+  packsAddAnimation: 'packs:addAnimation',
   /** The retrospective: plain sentences about today, yesterday, this week. Pull only. */
   gameSummary: 'game:summary',
   /** Last non-blerb foreground process basename, for the classification editor. */

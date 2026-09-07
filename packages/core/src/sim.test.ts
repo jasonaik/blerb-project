@@ -223,6 +223,144 @@ describe('design contract', () => {
   });
 });
 
+describe('interact (hover)', () => {
+  const interactAnim = { interact: { fps: 3, frames: [0, 1] } };
+
+  /** Run until the pet is standing on something. */
+  function settled(sim: ReturnType<typeof createSim>): void {
+    for (const dt of dtSequence(600)) sim.step(dt);
+    expect(sim.state.standingOn).not.toBeNull();
+  }
+
+  /** Step until the pet leaves `interact`; returns the bout's length in ms. */
+  function boutLength(sim: ReturnType<typeof createSim>, maxMs = 20_000): number {
+    let t = 0;
+    while (sim.state.behavior === 'interact' && t < maxMs) {
+      sim.step(16);
+      t += 16;
+    }
+    return t;
+  }
+
+  it('a touch is answered for 4–6s and then the pet goes back to its business, cursor or no cursor', () => {
+    const sim = createSim({ pack: testPack({}, interactAnim), world: simpleWorld(800, 400), seed: 3 });
+    settled(sim);
+    sim.dispatch({ k: 'hover', over: true });
+    expect(sim.state.behavior).toBe('interact');
+    expect(sim.state.anim).toBe('interact');
+    expect(sim.state.behaviorDur).toBeGreaterThanOrEqual(4000);
+    expect(sim.state.behaviorDur).toBeLessThanOrEqual(6000);
+    // The cursor leaves after half a second: the bout LINGERS, standing
+    // still, and the animation never restarts inside it.
+    for (let i = 0; i < 30; i++) sim.step(16);
+    sim.dispatch({ k: 'hover', over: false });
+    expect(sim.state.behavior).toBe('interact');
+    const remaining = boutLength(sim);
+    expect(remaining + 480).toBeGreaterThanOrEqual(4000 - 32);
+    expect(remaining + 480).toBeLessThanOrEqual(6000 + 32);
+    expect(sim.state.behavior).not.toBe('interact');
+
+    // A cursor that STAYS gets exactly the same: one bout, then business as usual.
+    const stay = createSim({ pack: testPack({}, interactAnim), world: simpleWorld(800, 400), seed: 3 });
+    settled(stay);
+    stay.dispatch({ k: 'hover', over: true });
+    let animT = stay.state.animT;
+    let t = 0;
+    for (;;) {
+      stay.step(16);
+      t += 16;
+      if (stay.state.behavior !== 'interact') break;
+      // Inside the bout: standing still, and the animation never restarts.
+      expect(stay.state.vx).toBe(0);
+      expect(stay.state.animT).toBeGreaterThanOrEqual(animT);
+      animT = stay.state.animT;
+    }
+    expect(t).toBeLessThanOrEqual(6000 + 32);
+    // Still hovered — and it does NOT start again on its own.
+    for (const dt of dtSequence(2000)) {
+      stay.step(dt);
+      expect(stay.state.behavior).not.toBe('interact');
+    }
+  });
+
+  it('a fresh touch — leave, come back — starts another bout', () => {
+    const sim = createSim({ pack: testPack({}, interactAnim), world: simpleWorld(800, 400), seed: 3 });
+    settled(sim);
+    sim.dispatch({ k: 'hover', over: true });
+    boutLength(sim);
+    expect(sim.state.behavior).not.toBe('interact');
+    // Cursor still there: nothing. Leave and return: a new bout.
+    for (const dt of dtSequence(500)) sim.step(dt);
+    expect(sim.state.behavior).not.toBe('interact');
+    sim.dispatch({ k: 'hover', over: false });
+    sim.dispatch({ k: 'hover', over: true });
+    expect(sim.state.behavior).toBe('interact');
+    expect(sim.state.behaviorT).toBe(0);
+  });
+
+  it('answers a touch that arrived mid-air once it lands — if the cursor is still there', () => {
+    // Thrown first, touched while falling: the touch is armed, not answered.
+    const answered = createSim({ pack: testPack({}, interactAnim), world: simpleWorld(800, 400), seed: 3 });
+    settled(answered);
+    answered.dispatch({ k: 'command', name: 'place', x: 400, y: 100 });
+    answered.dispatch({ k: 'hover', over: true });
+    expect(answered.state.behavior).toBe('fall');
+    let interactedMidAir = false;
+    let answeredOnLanding = false;
+    for (const dt of dtSequence(600)) {
+      answered.step(dt);
+      if (answered.state.behavior === 'interact') {
+        if (answered.state.standingOn === null) interactedMidAir = true;
+        else answeredOnLanding = true;
+      }
+    }
+    expect(interactedMidAir).toBe(false);
+    expect(answeredOnLanding).toBe(true);
+
+    // Same, but the cursor left before the landing: the touch is dropped.
+    const dropped = createSim({ pack: testPack({}, interactAnim), world: simpleWorld(800, 400), seed: 3 });
+    settled(dropped);
+    dropped.dispatch({ k: 'command', name: 'place', x: 400, y: 100 });
+    dropped.dispatch({ k: 'hover', over: true });
+    dropped.dispatch({ k: 'hover', over: false });
+    for (const dt of dtSequence(600)) {
+      dropped.step(dt);
+      expect(dropped.state.behavior).not.toBe('interact');
+    }
+  });
+
+  it('does nothing at all in a pack without an interact animation', () => {
+    const sim = createSim({ pack: testPack(), world: simpleWorld(800, 400), seed: 3 });
+    settled(sim);
+    sim.dispatch({ k: 'hover', over: true });
+    for (const dt of dtSequence(2000)) {
+      sim.step(dt);
+      expect(sim.state.behavior).not.toBe('interact');
+    }
+  });
+
+  it('reaches interact through an alias to real art, like every other slot', () => {
+    const sim = createSim({
+      pack: testPack({}, { jump: { fps: 3, frames: [0, 1] } }, { interact: 'jump' }),
+      world: simpleWorld(800, 400),
+      seed: 3,
+    });
+    settled(sim);
+    sim.dispatch({ k: 'hover', over: true });
+    expect(sim.state.behavior).toBe('interact');
+  });
+
+  it('rule 7: a pet that is never hovered is exactly the pet that has no interact art', () => {
+    const a = createSim({ pack: testPack({}, interactAnim), world: simpleWorld(800, 400), seed: 7 });
+    const b = createSim({ pack: testPack(), world: simpleWorld(800, 400), seed: 7 });
+    for (const dt of dtSequence(20_000)) {
+      a.step(dt);
+      b.step(dt);
+    }
+    expect(a.state).toEqual(b.state);
+  });
+});
+
 describe('surprise', () => {
   const surpriseAnim = { surprise: { fps: 3, frames: [0, 1] } };
 

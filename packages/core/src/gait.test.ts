@@ -48,12 +48,35 @@ function state(over: Partial<PetState>): PetState {
     motionEma: 0,
     rng: 1,
     hidden: false,
+    hovered: false,
+    hoverArmed: false,
     worldRev: 0,
     ...over,
   };
 }
 
 describe('applyGait via deriveFrame', () => {
+  it('leaves a DRAWN walk undeformed — the procedural gait is for packs with no walk frames', () => {
+    // add-anim onto a from-image pack, or a hand-authored rig beside real
+    // frames: the frames play as drawn, breathing and the land squash stay.
+    const drawn = resolvePack({
+      format: 'blerb-pet/1',
+      id: 'rigged-drawn',
+      name: 'Rigged, drawn walk',
+      atlas: { src: 'atlas.png' },
+      grid: { w: 32, h: 32, cols: 2 },
+      animations: { idle: { frames: [0], fps: 1 }, walk: { frames: [0, 1], fps: 8 } },
+      rig: { type: 'procedural', gaits: { walk: { strideLength: STRIDE } } },
+    });
+    const f = deriveFrame(drawn, state({ behavior: 'walk', anim: 'walk', odometer: STRIDE / 4 }));
+    expect(f.squash).toEqual({ sx: 1, sy: 1 });
+    expect(f.y).toBe(100);
+    expect(f.rotation).toBe(0);
+    // And an idle frame still breathes on the same pack.
+    const idle = deriveFrame(drawn, state({ behavior: 'idle', simT: 700 }));
+    expect(idle.squash.sy).not.toBe(1);
+  });
+
   it('is deterministic: same state, same frame, always', () => {
     const s = state({ behavior: 'walk', odometer: 13.7, simT: 4321 });
     expect(deriveFrame(pack, s)).toEqual(deriveFrame(pack, s));

@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, screen, Tray, type Display } from 'electron';
 import { readFile } from 'node:fs/promises';
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { frameBounds } from '@blerb/render-canvas';
 import { deriveFrame, type PetSnapshot, type PetState, type World } from '@blerb/core';
@@ -143,7 +143,7 @@ function loadPetHost(snapshot?: PetSnapshot): PetHost {
       const line = `${s.behavior} on=${s.standingOn ?? s.climbingOn ?? s.hangingOn ?? 'air'} screen=${where?.display.id ?? '?'}`;
       if (line !== prev) {
         prev = line;
-        console.log(`[pet] ${line} @ ${Math.round(s.x)},${Math.round(s.y)}`);
+        console.log(`[pet] ${line} @ ${Math.round(s.x)},${Math.round(s.y)} dur=${Math.round(s.behaviorDur)}`);
       }
     });
   }
@@ -156,24 +156,54 @@ function loadPetHost(snapshot?: PetSnapshot): PetHost {
  * the picker must never kill the app.
  */
 function switchPack(prevPack: string): void {
+  if (!swapPet()) {
+    console.error(`[blerb] pack "${settings.pack}" failed to load — keeping "${prevPack}"`);
+    settings = { ...settings, pack: prevPack };
+    saveSettings(settings);
+    return;
+  }
+  pushArt();
+}
+
+/** Rebuild the pet from settings.pack, carrying position and pose. False (and the old pet stays) on a broken pack. */
+function swapPet(): boolean {
   const snap = pet?.sim.serialize();
   try {
     const next = loadPetHost(snap);
     pet?.stop();
     pet = next;
     pet.start();
+    // The cursor outlives the sim it was reported to: a rebuilt sim starts
+    // un-hovered and the watcher only reports changes, so tell it.
+    if (hoverSent) pet.sim.dispatch({ k: 'hover', over: true });
+    return true;
   } catch (err) {
-    console.error(`[blerb] pack "${settings.pack}" failed to load — keeping "${prevPack}":`, err);
-    settings = { ...settings, pack: prevPack };
-    saveSettings(settings);
-    return;
+    console.error(`[blerb] pack "${settings.pack}" failed to load:`, err);
+    return false;
   }
-  // Overlays reload the sprite art from the new packDir; the tray wears the
-  // new face.
+}
+
+/** Overlays reload the sprite art (new dir, or same dir at a new artRev); the tray wears the new face. */
+function pushArt(): void {
   for (const { win, display } of overlays.values()) {
     if (!win.isDestroyed()) win.webContents.send(CH.overlayInit, initPayload(display));
   }
   tray?.setImage(trayIcon());
+}
+
+/**
+ * Where an in-place edit of the current pack may write. A bundled pack (the
+ * installed app's blob) is copied into the user root first — a user pack
+ * shadows a bundled one with the same id by design, so the copy simply
+ * becomes the pet from then on and the bundled files stay pristine.
+ */
+function writablePackDir(id: string): string {
+  const dir = packDirFor(id);
+  const userDir = join(userPacksRoot, id);
+  if (dir === userDir) return dir;
+  mkdirSync(userDir, { recursive: true });
+  for (const f of readdirSync(dir)) copyFileSync(join(dir, f), join(userDir, f));
+  return userDir;
 }
 
 // ------------------------------------------------------------------ overlays
@@ -229,9 +259,13 @@ function spawnOverlays(): void {
   scanner?.force();
 }
 
+/** Bumped when the current pack's files change in place, so overlays reload art from the same dir. */
+let artRev = 0;
+
 function initPayload(display: Display) {
   return {
     packDir: packDirFor(settings.pack).replace(/\\/g, '/'),
+    artRev,
     origin: { x: display.bounds.x, y: display.bounds.y },
     world: lastWorld ?? fallbackWorld(),
     state: pet?.sim.state ?? null,
@@ -399,7 +433,10 @@ function setTerrarium(id: string | null): void {
 
 /** The pet's face, cropped from its atlas's first cell. */
 function trayIcon(): Electron.NativeImage {
-  const img = nativeImage.createFromPath(join(packDirFor(settings.pack), 'atlas.png'));
+  // The manifest names the atlas — add-anim versions the filename.
+  const img = nativeImage.createFromPath(
+    join(packDirFor(settings.pack), pet?.pack.manifest.atlas.src ?? 'atlas.png'),
+  );
   const { width, height } = img.getSize();
   // The REAL first cell when the resolved pack is at hand — a hi-res atlas
   // (from-image art can be 400px a cell) has nothing but transparent margin
@@ -453,7 +490,10 @@ function startCursorWatcher(): void {
     const s = pet.sim.state;
     const frame = deriveFrame(pet.pack, s, settings.petScale);
     const cell = pet.pack.cells.get(frame.cellId);
-    if (!cell || s.hidden) return setInteractive(null);
+    if (!cell || s.hidden) {
+      reportHover(false);
+      return setInteractive(null);
+    }
 
     // Through the SAME transform the renderer draws with. The sprite is
     // rotated a quarter turn on a wall and a half turn under a ceiling, so a
@@ -465,12 +505,17 @@ function startCursorWatcher(): void {
       pet.pack.atlasScale,
     );
     // A little slack, because the target is a moving 32px sprite and the user
-    // is aiming with a mouse.
-    const pad = GRAB_PAD;
+    // is aiming with a mouse — and HYSTERESIS: a rigged sprite's box breathes
+    // with squash.sy and snaps to neutral on every behaviour change, so the
+    // exit edge sits well outside the entry edge. Without it a cursor resting
+    // at the fringe toggled hover (and now behaviour) several times a second.
+    // A quarter of the box covers the land pulse, walk squash and breathing.
+    const pad = interactiveWin !== null ? GRAB_PAD + Math.ceil(0.25 * b.h) : GRAB_PAD;
     const p = screen.getCursorScreenPoint(); // global DIP
     const over =
       p.x >= b.x - pad && p.x <= b.x + b.w + pad && p.y >= b.y - pad && p.y <= b.y + b.h + pad;
 
+    reportHover(over);
     if (!over) return setInteractive(null);
     const hit = [...overlays.values()].find(
       (o) =>
@@ -490,6 +535,33 @@ function setInteractive(win: BrowserWindow | null): void {
   }
   interactiveWin = win;
   if (win && !win.isDestroyed()) win.setIgnoreMouseEvents(false);
+}
+
+/**
+ * The hover signal, derived from the same hit-test that makes the window
+ * clickable — with a short DWELL: the cursor must be on the sprite for two
+ * consecutive polls before the sim hears "touched". A deliberate touch
+ * always is; a flick across the pet at over ~1000px/s is not, and should
+ * not start a bout. Leaving is reported at once. Called on EVERY poll, not
+ * on transitions, so the sim's picture cannot go stale across a drag or a
+ * hide.
+ */
+const HOVER_DWELL_POLLS = 2; // × 33ms ≈ 66ms
+let hoverPolls = 0;
+let hoverSent = false;
+
+function reportHover(over: boolean): void {
+  if (over) {
+    if (++hoverPolls < HOVER_DWELL_POLLS || hoverSent) return;
+    hoverSent = true;
+  } else {
+    hoverPolls = 0;
+    if (!hoverSent) return;
+    hoverSent = false;
+  }
+  if (process.env.BLERB_DEBUG) console.log(`[hover] ${over ? 'on' : 'off'}`);
+  pet?.sim.dispatch({ k: 'hover', over });
+  pet?.wake();
 }
 
 // ------------------------------------------------------------------ snapshot
@@ -537,6 +609,10 @@ function registerIpc(): void {
 
   ipcMain.on(CH.overlayDrag, (_e, active: boolean) => {
     dragLatch = active;
+    // A grab is not a hover: the watcher stops polling while the latch is
+    // held, so the sim must be told now or it keeps an interact bout going
+    // through the whole drag.
+    if (active) reportHover(false);
     if (!active) setInteractive(null);
   });
 
@@ -574,6 +650,40 @@ function registerIpc(): void {
     if (result.ok && result.id) applySettings({ pack: result.id });
     return result;
   });
+  // Add ONE animated file to the current pet as the named animation — how a
+  // surprise or an interact gets onto a pet you already use. Same pipeline
+  // as the CLI's add-anim; the art is reloaded in place afterwards.
+  ipcMain.handle(CH.packsAddAnimation, async (_e, anim: unknown) => {
+    if (typeof anim !== 'string' || !/^[a-z][a-z0-9_]*$/.test(anim)) return { ok: false, error: 'not an animation name' };
+    const dialogOpts = {
+      title: `Choose the ${anim} animation`,
+      filters: [{ name: 'Animated GIF or WebP', extensions: ['gif', 'webp'] }],
+      properties: ['openFile' as const],
+    };
+    const picked = settingsWin
+      ? await dialog.showOpenDialog(settingsWin, dialogOpts)
+      : await dialog.showOpenDialog(dialogOpts);
+    if (picked.canceled || picked.filePaths.length === 0) return { ok: false, canceled: true };
+    try {
+      const petgen = await import('@blerb/petgen');
+      const packDir = writablePackDir(settings.pack);
+      const warnings: string[] = [];
+      await petgen.addAnimations({
+        packDir,
+        inputs: picked.filePaths,
+        animNames: [anim],
+        warn: (m) => warnings.push(m),
+      });
+      packsCache = null;
+      artRev++;
+      if (!swapPet()) return { ok: false, error: 'the pack was rewritten but failed to load — see the log' };
+      pushArt();
+      return { ok: true, anim, warning: warnings[0] };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message.split('\n')[0] : String(err) };
+    }
+  });
+
   // The retrospective (design contract rule 2): computed when asked, never
   // pushed. The host owns the calendar — which keys are today, yesterday and
   // the last seven days — and the pure package does the arithmetic.

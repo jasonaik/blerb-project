@@ -71,6 +71,8 @@ const BEHAVIOR_DURATION_MS: Record<BehaviorId, readonly [number, number]> = {
   hang: [1200, 5000],
   /** ~5s: long enough to notice, short enough to miss if you blinked. */
   surprise: [4000, 6000],
+  /** A touch is answered for this long, whatever the cursor does next. Set exactly — not scaled by restlessness. */
+  interact: [4000, 6000],
   // Transient states; duration is decided by physics, not the picker.
   fall: [0, 0],
   land: [180, 180],
@@ -197,6 +199,8 @@ export function createSim(opts: SimOptions): Sim {
     motionEma: 0,
     rng: seed >>> 0,
     hidden: false,
+    hovered: false,
+    hoverArmed: false,
     worldRev: world.rev,
   };
 
@@ -335,7 +339,31 @@ export function createSim(opts: SimOptions): Sim {
     return true;
   }
 
+  /**
+   * An unanswered touch, and the pet standing on something: answer it, if
+   * the pack drew an answer. Never from a wall or a ceiling — the sprite is
+   * rotated there and the pose would read wrong — and never mid-air (the
+   * touch stays armed and is answered on landing, if the cursor is still
+   * there). Consumes the touch: a resting cursor is ONE touch, and when the
+   * bout ends the pet goes back to its business regardless. Returns whether
+   * it happened.
+   */
+  function maybeInteract(): boolean {
+    if (!state.hoverArmed || !pack.has('interact')) return false;
+    if (state.standingOn === null || state.climbingOn !== null || state.hangingOn !== null) return false;
+    if (state.behavior === 'fall') return false;
+    state.hoverArmed = false;
+    setBehavior('interact');
+    // 4–6s exactly, not the restlessness-scaled roll every other behaviour
+    // gets: a touch gets a fixed answer.
+    const [lo, hi] = BEHAVIOR_DURATION_MS.interact;
+    state.behaviorDur = randRange(state, lo, hi);
+    return true;
+  }
+
   function pickBehavior(): void {
+    // A touch that arrived mid-air is answered on landing, before the dice.
+    if (maybeInteract()) return;
     if (maybeDropThroughSeam()) return;
 
     // Rule 4, enforced rather than aspired to: if the pet has been moving more
@@ -551,7 +579,8 @@ export function createSim(opts: SimOptions): Sim {
     const alpha = 1 - Math.exp(-dtMs / MOTION_TAU_MS);
     state.motionEma += (moving - state.motionEma) * alpha;
 
-    // Transitions out of the timed states.
+    // Transitions out of the timed states. A reaction to a cursor that is
+    // still there simply starts over — pickBehavior's first check.
     if (
       state.behavior !== 'fall' &&
       state.behavior !== 'climb' &&
@@ -1000,6 +1029,23 @@ export function createSim(opts: SimOptions): Sim {
         case 'pointer':
           // Shyness (rule 3 — the pet yields) lands with the game layer.
           break;
+
+        case 'hover':
+          // The host's hit-test, not a DOM event (CLAUDE.md §2). The ON edge
+          // is a touch: it arms one answer, given now if the pet is standing
+          // or on landing otherwise. The OFF edge ends nothing — a bout in
+          // progress lingers its full 4–6s — it only drops an unanswered
+          // touch, so a cursor that brushed a falling pet and left is not
+          // answered later at nobody.
+          if (state.hovered === e.over) break;
+          state.hovered = e.over;
+          if (e.over) {
+            state.hoverArmed = true;
+            maybeInteract();
+          } else {
+            state.hoverArmed = false;
+          }
+          break;
       }
     },
 
@@ -1012,7 +1058,10 @@ export function createSim(opts: SimOptions): Sim {
         x: state.x,
         y: state.y,
         facing: state.facing,
-        behavior: state.behavior,
+        // interact's driver (the cursor) is never persisted, so the
+        // behaviour must not be either — a restart would play a bout at
+        // nobody.
+        behavior: state.behavior === 'interact' ? 'idle' : state.behavior,
         rng: state.rng,
       };
     },

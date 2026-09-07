@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('blerbSettings', {
   set: (patch: unknown) => ipcRenderer.invoke(CH.settingsSet, patch),
   packs: () => ipcRenderer.invoke(CH.packsList),
   importPet: (name?: string) => ipcRenderer.invoke(CH.packsImport, name),
+  addAnimation: (anim: string) => ipcRenderer.invoke(CH.packsAddAnimation, anim),
   summary: () => ipcRenderer.invoke(CH.gameSummary),
   currentApp: () => ipcRenderer.invoke(CH.gameCurrentApp),
   onChange: (cb: (s: unknown) => void) => ipcRenderer.on(CH.settingsChanged, (_e, s) => cb(s)),

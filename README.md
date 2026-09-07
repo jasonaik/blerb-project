@@ -54,6 +54,7 @@ Open it from the **tray icon → Settings…**, by **double-clicking the tray ic
 |---|---|---|
 | Pet | blob | Which pet. The dropdown lists every pack the app can see — switching is instant, and the new pet appears where the old one stood. Also in the tray and right-click menus (which degrade to "open Settings" past ~24 pets, because a native menu with 500 radio items is not a control). |
 | Import your own art | — | A file picker. Give it animated GIFs (named after animations: `walk.gif`, `idle.gif`…) or one still picture, optionally type a name, and it becomes a pack and your current pet on the spot. Same pipeline as the petgen CLI below. |
+| Add art to this pet | — | Pick a slot and one animated GIF, and it's added to the pet you're already using — no re-import. **surprise** plays on its own every few minutes; **interact** plays for a few seconds when your cursor touches the pet. Smooth art is brought to the pet's own size automatically; pixel art stays at its native size (the CLI's `--height` overrides either). |
 | Pet visible | on | Hides the pet without quitting. It stops moving entirely while hidden. |
 | Invisible in screen capture | **on** | Sets `WDA_EXCLUDEFROMCAPTURE`. Windows itself keeps the pet out of screen shares and recordings while leaving it visible to you. |
 | Start with Windows | off | Standard login item. |
@@ -183,7 +184,13 @@ Useful extras: `--speed walk=27` writes a `designSpeed` so the walk cycle stays 
 
 GIFs don't need a transparent background: an opaque one gets the same corner flood-fill as `from-image`, and hand-drawn art at any resolution is kept at full size with `atlas.scale` set so it renders pet-sized. Mixing pixel art and a big drawing in one import works too — the drawing is resampled down to the pixel art's height (or `--height <px>`), so they share one atlas. If the pixel-art detection guesses wrong for your file, `--pixel-art` or `--smooth` overrides it.
 
-A file named `surprise.gif` becomes a flourish: every few minutes, at random, the pet plays it for about five seconds and then carries on. Nothing counts it, nothing announces it.
+Two optional slots make a pet feel alive. `surprise.gif` is a flourish: every few minutes, at random, the pet plays it for about five seconds and then carries on — nothing counts it, nothing announces it. `interact.gif` is its answer to you: touch the pet with your cursor and it stops and plays it for four to six seconds, then goes back to its own business — whether you stayed or left. Touch it again (move away, come back) and it answers again. A flick straight across it at speed doesn't count. Either can be added to a pet you already have:
+
+```bash
+pnpm petgen add-anim packs/quagsire "C:\art\blerb-jump.gif" --anim interact
+```
+
+— or from the settings window's **Add art to this pet** row, which is the same thing behind a file picker.
 
 Imported packs appear in the settings window's **Pet** dropdown (and the tray menu) the next time you open it — pick one and the switch is instant.
 

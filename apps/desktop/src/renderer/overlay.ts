@@ -136,15 +136,18 @@ async function main(): Promise<void> {
   };
 
   let artSeq = 0;
+  let artRev = init.artRev;
   window.blerb.onInit((next) => {
     // Sent when displays are rearranged (this window may now be a different
-    // monitor, so its origin changes) — or when the PET changed, in which
-    // case the sprite art has to be reloaded before painting.
+    // monitor, so its origin changes) — or when the PET changed, or its files
+    // were rewritten in place (artRev), in which case the sprite art has to
+    // be reloaded before painting.
     init = next;
     origin = next.origin;
     world = next.world;
-    if (next.packDir !== packDir) {
+    if (next.packDir !== packDir || next.artRev !== artRev) {
       packDir = next.packDir;
+      artRev = next.artRev;
       const seq = ++artSeq;
       void loadArt(next.packDir)
         .then(() => {

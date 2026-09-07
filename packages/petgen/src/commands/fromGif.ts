@@ -17,6 +17,10 @@
  * pixels. The one thing decided ACROSS files is the upscale factor of the
  * pixel-art ones — they were drawn at one scale, and a per-file GCD can be a
  * two-frame coincidence.
+ *
+ * The per-file half (`importGifGroups`) and the resample-to-match half
+ * (`fitSmoothGroups`) are exported: `add-anim` runs the same pipeline to
+ * append an animation to a pack that already exists.
  */
 
 import { alignGroup, buildAtlas, type AlignedFrame } from '../import/layout.js';
@@ -35,21 +39,7 @@ import { erodeEdge, removeBackground, sharedBackdrop } from '../import/bgremove.
 import { emitPack, idFromOutDir, type EmitAnimation } from '../import/emit.js';
 import { slugFromFilename } from '../import/spec.js';
 
-export interface FromGifOptions {
-  inputs: string[];
-  outDir: string;
-  /** Animation name; only valid with a single input. */
-  anim?: string | undefined;
-  /**
-   * Per-input animation names, parallel to `inputs`; an undefined entry falls
-   * back to the filename slug. For callers whose files aren't named after
-   * their animations (batch imports, GUI file pickers).
-   */
-  animNames?: (string | undefined)[] | undefined;
-  /** designSpeed (px/s) per animation name — feet-locks that cycle. */
-  speeds?: Record<string, number> | undefined;
-  /** Alias map written into the manifest, e.g. { climb: 'walk' }. */
-  aliases?: Record<string, string> | undefined;
+export interface GifImportOptions {
   /** Backdrop tolerance 0..1 for opaque inputs (corner flood fill). Default 0.1. */
   tolerance?: number | undefined;
   /** Skip background removal — the alpha is already right, or the backdrop is wanted. */
@@ -68,13 +58,30 @@ export interface FromGifOptions {
    * this is the way out.
    */
   pixelArt?: boolean | undefined;
+}
+
+export interface FromGifOptions extends GifImportOptions {
+  inputs: string[];
+  outDir: string;
+  /** Animation name; only valid with a single input. */
+  anim?: string | undefined;
+  /**
+   * Per-input animation names, parallel to `inputs`; an undefined entry falls
+   * back to the filename slug. For callers whose files aren't named after
+   * their animations (batch imports, GUI file pickers).
+   */
+  animNames?: (string | undefined)[] | undefined;
+  /** designSpeed (px/s) per animation name — feet-locks that cycle. */
+  speeds?: Record<string, number> | undefined;
+  /** Alias map written into the manifest, e.g. { climb: 'walk' }. */
+  aliases?: Record<string, string> | undefined;
   id?: string | undefined;
   name?: string | undefined;
   author?: string | undefined;
   license?: string | undefined;
 }
 
-interface GifGroup {
+export interface GifGroup {
   anim: string;
   /** Unique frames, in first-appearance order. */
   frames: Raster[];
@@ -97,9 +104,9 @@ interface GifGroup {
  */
 export function assembleAnimations(
   groups: readonly { anim: string; play: readonly number[]; uniqueCount: number; fps: number }[],
+  base = 0,
 ): EmitAnimation[] {
   const out: EmitAnimation[] = [];
-  let base = 0;
   for (const g of groups) {
     out.push({ name: g.anim, frames: g.play.map((i) => base + i), fps: g.fps });
     base += g.uniqueCount;
@@ -124,7 +131,7 @@ function modal(xs: readonly number[]): number {
 }
 
 /** Height of a group's registered content: the union of every frame's bounds. */
-function contentHeight(frames: readonly Raster[]): number {
+export function contentHeight(frames: readonly Raster[]): number {
   let union: Box | null = null;
   for (const f of frames) {
     const b = trimBox(f);
@@ -143,20 +150,17 @@ const NEAR_SIZE = 2;
 
 const baseName = (p: string): string => p.replace(/\\/g, '/').split('/').pop() ?? p;
 
-export async function fromGif(o: FromGifOptions): Promise<string> {
-  if (o.inputs.length === 0) throw new Error('from-gif needs at least one animated image');
-  if (o.anim && o.inputs.length > 1) {
-    throw new Error('--anim names a single animation — with several inputs, name the files instead');
-  }
-  if (o.animNames && o.animNames.length !== o.inputs.length) {
-    throw new Error(`animNames must parallel inputs (${o.animNames.length} names for ${o.inputs.length} files)`);
-  }
-  if (o.height !== undefined && !(o.height >= 4)) {
-    throw new Error(`--height must be at least 4px, got ${o.height}`);
-  }
-
+/**
+ * The per-file half of the pipeline: decode, timing, backdrop, verdict,
+ * erode. Returns one group per input, frames at the file's own scale.
+ */
+export async function importGifGroups(
+  inputs: readonly string[],
+  animNames: readonly (string | undefined)[],
+  o: GifImportOptions,
+): Promise<GifGroup[]> {
   const groups: GifGroup[] = [];
-  for (const [idx, input] of o.inputs.entries()) {
+  for (const [idx, input] of inputs.entries()) {
     const name = baseName(input);
     const { frames: raw, delaysMs } = await loadAnimated(input);
     if (raw.length < 2) {
@@ -236,9 +240,91 @@ export async function fromGif(o: FromGifOptions): Promise<string> {
       throw new Error(`${name}: nothing left after background removal — try a lower --tolerance`);
     }
 
-    const anim = o.anim ?? o.animNames?.[idx] ?? slugFromFilename(input);
+    const anim = animNames[idx] ?? slugFromFilename(input);
     groups.push({ anim, frames, play: timedPlay, fps, pixelArt, removalRan, hardCut });
   }
+  return groups;
+}
+
+/**
+ * One upscale factor for every pixel-art file, or none: detection over ALL
+ * their frames stacked, as from-frames does. A single file's run GCD can be
+ * a two-frame coincidence, and one file downscaled 2x beside its siblings
+ * at native size is a pet half the size of itself.
+ */
+export function undoSharedUpscale(pixelGroups: readonly GifGroup[]): void {
+  if (pixelGroups.length === 0) return;
+  const shared = detectForImport(
+    pixelGroups.flatMap((g) => g.frames),
+    {
+      alphaSynthetic: pixelGroups.some((g) => g.removalRan),
+      hardEdge: pixelGroups.every((g) => !g.removalRan || g.hardCut),
+    },
+  );
+  if (shared.scale >= 2) {
+    const k = shared.scale;
+    if (pixelGroups.every((g) => g.frames.every((f) => f.w % k === 0 && f.h % k === 0))) {
+      console.log(`pixel art upscaled ${k}x — importing at native resolution`);
+      for (const g of pixelGroups) g.frames = g.frames.map((f) => downscaleBy(f, k));
+    } else {
+      console.warn(`looks like pixel art upscaled ${k}x, but the frames do not divide by ${k} — leaving as-is`);
+    }
+  }
+}
+
+/**
+ * Bring smooth groups to `targetH` content height. `matching` says the
+ * target came from pixel art rather than an explicit --height: then only
+ * shrink, and leave near-size siblings alone (see NEAR_SIZE).
+ */
+export async function fitSmoothGroups(
+  smoothGroups: readonly GifGroup[],
+  targetH: number,
+  matching: { pixelArt: boolean; explicit: boolean },
+): Promise<void> {
+  for (const g of smoothGroups) {
+    const h = contentHeight(g.frames);
+    if (h === 0 || h === targetH) continue;
+    if (!matching.explicit) {
+      // Matching only ever shrinks, and only art that is clearly hi-res.
+      if (h < targetH) continue;
+      if (matching.pixelArt && h <= NEAR_SIZE * targetH) {
+        console.warn(
+          `${g.anim}: ${h}px tall is close to the pixel art's ${targetH}px — leaving it unresampled ` +
+            `(it may be pixel art with many colours; pass --pixel-art, or --height ${targetH} to force)`,
+        );
+        continue;
+      }
+    }
+    const f = targetH / h;
+    const first = g.frames[0]!;
+    const w2 = Math.max(1, Math.round(first.w * f));
+    const h2 = Math.max(1, Math.round(first.h * f));
+    console.log(
+      `${g.anim}: smooth art ${h}px tall — resampling to ${targetH}px` +
+        (matching.explicit
+          ? ''
+          : (matching.pixelArt ? ' to match the pixel art' : ' to match the smallest file') +
+            ' (override with --height)'),
+    );
+    g.frames = await Promise.all(g.frames.map((fr) => resampleRaster(fr, w2, h2)));
+  }
+}
+
+export async function fromGif(o: FromGifOptions): Promise<string> {
+  if (o.inputs.length === 0) throw new Error('from-gif needs at least one animated image');
+  if (o.anim && o.inputs.length > 1) {
+    throw new Error('--anim names a single animation — with several inputs, name the files instead');
+  }
+  if (o.animNames && o.animNames.length !== o.inputs.length) {
+    throw new Error(`animNames must parallel inputs (${o.animNames.length} names for ${o.inputs.length} files)`);
+  }
+  if (o.height !== undefined && !(o.height >= 4)) {
+    throw new Error(`--height must be at least 4px, got ${o.height}`);
+  }
+
+  const names = o.inputs.map((_, i) => o.anim ?? o.animNames?.[i]);
+  const groups = await importGifGroups(o.inputs, names, o);
 
   const dupNames = groups.map((g) => g.anim).filter((n, i, a) => a.indexOf(n) !== i);
   if (dupNames.length > 0) {
@@ -256,28 +342,7 @@ export async function fromGif(o: FromGifOptions): Promise<string> {
   const smoothGroups = groups.filter((g) => !g.pixelArt);
   const heightOf = (g: GifGroup) => contentHeight(g.frames);
 
-  // --- one upscale factor for every pixel-art file, or none ---------------
-  // Detection over ALL their frames stacked, as from-frames does: a single
-  // file's run GCD can be a two-frame coincidence, and one file downscaled
-  // 2x beside its siblings at native size is a pet half the size of itself.
-  if (pixelGroups.length > 0) {
-    const shared = detectForImport(
-      pixelGroups.flatMap((g) => g.frames),
-      {
-        alphaSynthetic: pixelGroups.some((g) => g.removalRan),
-        hardEdge: pixelGroups.every((g) => !g.removalRan || g.hardCut),
-      },
-    );
-    if (shared.scale >= 2) {
-      const k = shared.scale;
-      if (pixelGroups.every((g) => g.frames.every((f) => f.w % k === 0 && f.h % k === 0))) {
-        console.log(`pixel art upscaled ${k}x — importing at native resolution`);
-        for (const g of pixelGroups) g.frames = g.frames.map((f) => downscaleBy(f, k));
-      } else {
-        console.warn(`looks like pixel art upscaled ${k}x, but the frames do not divide by ${k} — leaving as-is`);
-      }
-    }
-  }
+  undoSharedUpscale(pixelGroups);
 
   // --- one scale for the whole atlas -------------------------------------
   // Pixel art is always native. Smooth art either comes down to the pixel
@@ -293,30 +358,7 @@ export async function fromGif(o: FromGifOptions): Promise<string> {
     const targetH =
       o.height ?? (matchH > 0 ? matchH : new Set(smoothHs).size > 1 ? Math.min(...smoothHs) : undefined);
     if (targetH !== undefined) {
-      for (const g of smoothGroups) {
-        const h = heightOf(g);
-        if (h === 0 || h === targetH) continue;
-        if (o.height === undefined) {
-          // Matching only ever shrinks, and only art that is clearly hi-res.
-          if (h < targetH) continue;
-          if (matchH > 0 && h <= NEAR_SIZE * targetH) {
-            console.warn(
-              `${g.anim}: ${h}px tall is close to the pixel art's ${targetH}px — leaving it unresampled ` +
-                `(it may be pixel art with many colours; pass --pixel-art, or --height ${targetH} to force)`,
-            );
-            continue;
-          }
-        }
-        const f = targetH / h;
-        const first = g.frames[0]!;
-        const w2 = Math.max(1, Math.round(first.w * f));
-        const h2 = Math.max(1, Math.round(first.h * f));
-        console.log(
-          `${g.anim}: smooth art ${h}px tall — resampling to ${targetH}px` +
-            (o.height === undefined ? (matchH > 0 ? ' to match the pixel art' : ' to match the smallest file') + ' (override with --height)' : ''),
-        );
-        g.frames = await Promise.all(g.frames.map((fr) => resampleRaster(fr, w2, h2)));
-      }
+      await fitSmoothGroups(smoothGroups, targetH, { pixelArt: matchH > 0, explicit: o.height !== undefined });
     }
     if (pixelGroups.length === 0 && o.height === undefined) {
       const maxH = Math.max(...smoothGroups.map(heightOf));
