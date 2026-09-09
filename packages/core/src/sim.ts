@@ -35,9 +35,6 @@ const FIXED_DT_MS = 1000 / 60;
  */
 const MAX_STEP_MS = 250;
 
-/** Design contract rule 4: stationary >=70% of wall-clock. */
-const MOTION_BUDGET = 0.3;
-
 /**
  * How near a wall or ceiling a hand-placed pet has to land to grab it, in
  * world px. Also the minimum drop below the cursor before a surface beats the
@@ -56,10 +53,19 @@ const HANG_SPEED = 0.7;
  */
 const SEAM_DROP = 0.03;
 
-/** EMA time constant for motionEma, ms. ~30s of memory. */
+/**
+ * EMA time constant for `motionEma`, ms. ~30s of memory. The EMA is a
+ * DIAGNOSTIC — the preview HUD shows it beside the pack's activity — and
+ * nothing in the sim decides on it. It used to be a cap (walking came off
+ * the menu above a fixed 0.3, "stationary ≥70%"); when the share became the
+ * user's knob the cap only fought the dice: a pack whose stationary time is
+ * long naps needs a minute of walking to balance each one, and the cap cut
+ * that minute short, so such a pet never reached the share it was asked for.
+ * The picker's weights alone give the long-run share (`walkWeightFor`).
+ */
 const MOTION_TAU_MS = 30_000;
 
-/** Movement bouts <=4s, also rule 4. */
+/** Movement bouts <=4s: the pet keeps changing its mind, whatever its activity. */
 const BEHAVIOR_DURATION_MS: Record<BehaviorId, readonly [number, number]> = {
   idle: [1500, 4500],
   walk: [900, 4000],
@@ -78,17 +84,52 @@ const BEHAVIOR_DURATION_MS: Record<BehaviorId, readonly [number, number]> = {
   land: [180, 180],
 };
 
-/** Behaviors the picker may choose on the ground. */
-const PICKABLE: readonly BehaviorId[] = ['idle', 'walk', 'sit', 'sleep', 'stretch', 'surprise'];
+/** Stationary behaviors the picker may choose on the ground; `walk` is weighed separately. */
+const STATIONARY: readonly BehaviorId[] = ['idle', 'sit', 'sleep', 'stretch', 'surprise'];
 
 /**
- * Default weight for `surprise` when the pack ships that animation but says
- * nothing about how often. Against the default idle weights (14 in total)
- * this is ~1.75% of decisions — a decision lands every few seconds, so a
- * flourish every few minutes. Randomised, never scheduled (rule 6), and
- * nothing in state remembers it happened (rule 5).
+ * Default share of TIME in `surprise` when the pack ships that animation but
+ * says nothing about how often: 1.2% — a ~6s bout every eight minutes or so.
+ * A rate, not a weight, derived per decision the same way as walking, so the
+ * cadence stays put when the user turns activity up or down (as a fixed
+ * weight it did not: 70% walking halved the stationary decisions it competed
+ * in, and the flourish went from ~8 to ~20 minutes apart). An explicit
+ * `idleWeights.surprise` overrides it as a plain weight among the stationary
+ * ones. Randomised, never scheduled (rule 6), and nothing in state remembers
+ * it happened (rule 5).
  */
-const SURPRISE_WEIGHT = 0.25;
+const SURPRISE_SHARE = 0.012;
+
+/**
+ * Expected length of a bout of `b`, ms — the midpoint of its range. The
+ * restlessness scale multiplies every bout alike, so it cancels out of any
+ * share computed from these.
+ */
+const expectedMs = (b: BehaviorId): number =>
+  (BEHAVIOR_DURATION_MS[b][0] + BEHAVIOR_DURATION_MS[b][1]) / 2;
+
+/** Σ weight × expected bout over a weight list — the "mass" a share is taken against. */
+function weightMs(weights: ReadonlyArray<readonly [BehaviorId, number]>): number {
+  let s = 0;
+  for (const [b, w] of weights) s += w * expectedMs(b);
+  return s;
+}
+
+/**
+ * The per-decision weight that gives behavior `b` a `share` of TIME against
+ * everything else's weight-mass. Renewal–reward: the long-run share of time
+ * in a behavior is its (weight × expected bout) over the sum of everyone's,
+ * so w·E[b] / (w·E[b] + M) = p solves to w = p/(1−p) · M/E[b]. Weights are
+ * per DECISION; a walk bout is short and a sleep is long, which is why
+ * "walk 70% of the time" is not "walk weight 7 against 3". Returns Infinity
+ * at share 1 — the caller drops everything else. `othersMs` must be positive.
+ */
+function shareWeight(share: number, b: BehaviorId, othersMs: number): number {
+  const p = Math.min(1, Math.max(0, share));
+  if (p <= 0) return 0;
+  if (p >= 1) return Infinity;
+  return ((p / (1 - p)) * othersMs) / expectedMs(b);
+}
 
 /**
  * Reserved platform id for "resting on the bottom of a region with no real
@@ -366,21 +407,42 @@ export function createSim(opts: SimOptions): Sim {
     if (maybeInteract()) return;
     if (maybeDropThroughSeam()) return;
 
-    // Rule 4, enforced rather than aspired to: if the pet has been moving more
-    // than its budget lately, walking is simply not on the menu.
-    const mayWalk = state.motionEma < MOTION_BUDGET;
+    const activity = pack.behavior.activity;
+    // Only a pack that actually PROVIDES a surprise — real art, or an alias
+    // that reaches real art — gets to spring one. The idle fallback would
+    // just be five seconds of standing still.
+    const hasSurprise = pack.has('surprise');
+    const explicitSurprise = pack.behavior.idleWeights['surprise'];
 
-    const weights = PICKABLE.filter((b) => b !== 'walk' || mayWalk)
+    // The stationary menu, as the pack weighs it. An explicit surprise weight
+    // belongs in here (it competes as a plain weight); the default surprise is
+    // a share, added below.
+    let stationary: ReadonlyArray<readonly [BehaviorId, number]> = STATIONARY.filter(
+      (b) => b !== 'surprise' || (hasSurprise && explicitSurprise !== undefined),
+    )
       .filter((b) => (b === 'sleep' ? pack.behavior.can.sleep : true))
       .filter((b) => (b === 'sit' ? pack.behavior.can.sit : true))
-      // Only a pack that actually PROVIDES a surprise — real art, or an alias
-      // that reaches real art — gets to spring one. The idle fallback would
-      // just be five seconds of standing still.
-      .filter((b) => (b === 'surprise' ? pack.has('surprise') : true))
-      .map(
-        (b) =>
-          [b, pack.behavior.idleWeights[b] ?? (b === 'surprise' ? SURPRISE_WEIGHT : 0)] as const,
-      );
+      .map((b) => [b, pack.behavior.idleWeights[b] ?? 0] as const);
+    // A pack that zeroed (or disabled) every stationary behavior still needs
+    // something to stand against, or activity collapses into a two-position
+    // switch: any value in (0, 1) would mean "always walk".
+    if (!stationary.some(([, w]) => w > 0)) stationary = [['idle', 1]];
+
+    const stationaryMs = weightMs(stationary);
+    const walkW = shareWeight(activity, 'walk', stationaryMs);
+    let weights: ReadonlyArray<readonly [BehaviorId, number]>;
+    if (walkW === Infinity) {
+      // Activity 1: never stops — not even for a flourish.
+      weights = [['walk', 1]];
+    } else {
+      weights = [...stationary, ['walk', walkW]];
+      if (hasSurprise && explicitSurprise === undefined) {
+        weights = [
+          ...weights,
+          ['surprise', shareWeight(SURPRISE_SHARE, 'surprise', stationaryMs + walkW * expectedMs('walk'))],
+        ];
+      }
+    }
 
     const chosen = weightedPick(state, weights) ?? 'idle';
 
@@ -592,11 +654,51 @@ export function createSim(opts: SimOptions): Sim {
     }
   }
 
+  /**
+   * Drop off a ceiling: a straight fall, not a glide. Hanging carries a
+   * sideways speed, and a pet that let go at the very end of a ceiling with
+   * it still set drifted a couple of pixels past the corner — through the
+   * side wall of the window it was shut in. Letting go means letting go of
+   * the motion too.
+   */
+  function letGo(): void {
+    state.vx = 0;
+    startFalling();
+  }
+
   function stepFall(dt: number): void {
     const prevY = state.y;
+    const prevX = state.x;
     state.vy += world.gravity * dt;
     state.y += state.vy * dt;
     state.x += state.vx * dt;
+
+    // A fall does not pass through a wall. Region containment (below) covers
+    // the screen's own edges, but a terrarium's walls are interior — and the
+    // one exit the pin has to close is exactly a fall that drifts sideways
+    // across one. Stop at the wall and drop straight down from there.
+    if (state.vx !== 0) {
+      // The WHOLE step against the wall's span, not the end point: in the
+      // tick a fall passes a terrarium's floor line the end point is already
+      // below the wall's foot, and the sideways part of that same tick was
+      // slipping out through the bottom corner.
+      const yLo = Math.min(prevY, state.y);
+      const yHi = Math.max(prevY, state.y);
+      for (const w of world.walls) {
+        if (yHi < w.y0 || yLo > w.y1) continue;
+        const from = prevX - w.x;
+        const to = state.x - w.x;
+        // Crossed the line, landed exactly on it, or started ON it (this
+        // check's own doing one tick earlier) and moved to the side the pet
+        // does not belong on — `side` is the direction from wall to pet.
+        const crossed =
+          from * to < 0 || (to === 0 && from !== 0) || (from === 0 && to !== 0 && Math.sign(to) === -w.side);
+        if (!crossed) continue;
+        state.x = w.x;
+        state.vx = 0;
+        break;
+      }
+    }
 
     // Keep the fall inside the desktop. Stepping off the end of a surface
     // carries the walking speed with it, and at a screen's OUTER edge — the
@@ -728,13 +830,13 @@ export function createSim(opts: SimOptions): Sim {
    */
   function stepHang(dt: number): void {
     const c = ceilingById(state.hangingOn);
-    if (!c) return startFalling(); // the window it was under closed
+    if (!c) return letGo(); // the window it was under closed
     state.y = c.y;
 
     if (state.behaviorT >= state.behaviorDur) {
       // Time to reconsider. Letting go is the only exit that does not need
       // somewhere to walk to, so it has to stay reasonably likely.
-      if (pack.behavior.can.fall && chance(state, 0.3)) return startFalling();
+      if (pack.behavior.can.fall && chance(state, 0.3)) return letGo();
       const wasMoving = state.vx !== 0;
       setBehavior('hang');
       if (chance(state, 0.5)) state.facing = state.facing === 1 ? -1 : 1;
@@ -903,10 +1005,10 @@ export function createSim(opts: SimOptions): Sim {
     if (state.hangingOn !== null) {
       // Ride the window it is hanging under; drop if that window has gone.
       const c = ceilingById(state.hangingOn);
-      if (!c) return startFalling();
+      if (!c) return letGo();
       state.x += ownerShift(prev.ceilings, c);
       state.y = c.y;
-      if (state.x < c.x0 || state.x > c.x1) startFalling();
+      if (state.x < c.x0 || state.x > c.x1) letGo();
       return;
     }
 

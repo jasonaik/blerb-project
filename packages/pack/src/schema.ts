@@ -114,10 +114,22 @@ const Behavior = z.object({
     .default({}),
   /** 0..1 — how readily the pet climbs a wall instead of turning around. */
   climbiness: z.number().min(0).max(1).default(0.45),
-  /** Relative weights for picking the next idle behavior. Keys are animation names. */
+  /**
+   * 0..1 — the share of its own time the pet spends on the move rather than
+   * standing, sitting or sleeping. The sim derives the walk weight from this
+   * against `idleWeights`, so 0.7 means walking ~70% of the time whatever the
+   * stationary weights are. 0 never walks unprompted; 1 never stops. The
+   * desktop app writes the user's Activity slider through to this field.
+   */
+  activity: z.number().min(0).max(1).default(0.7),
+  /**
+   * Relative weights for picking the next STATIONARY behavior — how the
+   * standing-still share is split between idle, sit, sleep, stretch and
+   * surprise. Keys are animation names. A `walk` key is ignored: the moving
+   * share is `activity`, one knob, not a weight competing with it.
+   */
   idleWeights: z.record(z.string(), z.number().nonnegative()).default({
     idle: 6,
-    walk: 4,
     sit: 3,
     sleep: 1,
   }),

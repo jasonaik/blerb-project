@@ -23,6 +23,12 @@ export interface Settings {
   smoothTracking: boolean;
   /** Display scale multiplier for the sprite. 32px art at 2 → 64px on screen. */
   petScale: number;
+  /**
+   * 0..1 — the share of its time the pet spends on the move rather than
+   * standing, sitting or sleeping. Written through to the pack's
+   * `behavior.activity`; the sim derives the walk odds from it. Default 0.7.
+   */
+  activity: number;
   /** Pack directory name under packs/. */
   pack: string;
   /**

@@ -5,7 +5,7 @@ import { join, resolve, sep } from 'node:path';
 import { frameBounds } from '@blerb/render-canvas';
 import { deriveFrame, type PetSnapshot, type PetState, type World } from '@blerb/core';
 import { CH, type OverlayCommand, type Settings } from '../shared/ipc';
-import { DEFAULTS, loadSettings, sanitizeClassification, saveSettings, settingsFileExists } from './settings';
+import { DEFAULTS, loadSettings, sanitizeClassification, saveSettings, settingsFileExists, unitInterval } from './settings';
 import { importPet } from './importer';
 import { localDayKeyAgo, startObserver, type Observer } from './observer';
 import { loadGameState, saveGameState } from './gameStore';
@@ -123,6 +123,7 @@ function loadPetHost(snapshot?: PetSnapshot): PetHost {
   // The pack ships with climbing on; the settings are the user's override.
   pack.behavior.can.climb = settings.climbing;
   pack.behavior.can.hang = settings.hanging;
+  pack.behavior.activity = settings.activity;
   // Diagnostic: climb at every wall instead of ~45% of the time, so the
   // multi-monitor path can be exercised without waiting on dice.
   if (process.env.BLERB_CLIMBY) pack.behavior.climbiness = 1;
@@ -327,6 +328,9 @@ function applySettings(patch: Partial<Settings>): Settings {
     patch = { ...patch };
     delete patch.pack;
   }
+  // Same for the activity share: the sim divides by (1 - activity), so a
+  // value outside [0, 1] (or not a number at all) is clamped or dropped here.
+  if ('activity' in patch) patch = { ...patch, activity: unitInterval(patch.activity, settings.activity) };
   const prevPack = settings.pack;
   settings = { ...settings, ...patch };
   // Same hole as loadSettings: a malformed IPC patch must neither crash the
@@ -335,11 +339,12 @@ function applySettings(patch: Partial<Settings>): Settings {
   saveSettings(settings);
 
   if ('pack' in patch && settings.pack !== prevPack) switchPack(prevPack);
-  if (('climbing' in patch || 'hanging' in patch) && pet) {
+  if (('climbing' in patch || 'hanging' in patch || 'activity' in patch) && pet) {
     // The sim reads these live on every behavior decision — write through to
     // the resolved pack so the toggles work without a restart.
     pet.pack.behavior.can.climb = settings.climbing;
     pet.pack.behavior.can.hang = settings.hanging;
+    pet.pack.behavior.activity = settings.activity;
     pet.wake();
   }
   if ('petVisible' in patch) pushVisibility();
@@ -805,7 +810,7 @@ void app.whenReady().then(() => {
 
   console.log(
     `[blerb] up — displays=${overlays.size} protection=${effectiveProtection()} ` +
-      `gpu=${!process.env.BLERB_SOFTWARE} climb=${settings.climbing}`,
+      `gpu=${!process.env.BLERB_SOFTWARE} climb=${settings.climbing} activity=${settings.activity}`,
   );
 });
 

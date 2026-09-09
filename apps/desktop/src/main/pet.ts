@@ -12,9 +12,9 @@ import { resolvePack, type ResolvedPack } from '@blerb/pack';
  * views. `RenderFrame` still never crosses a process boundary: each renderer
  * derives its own from the state it receives.
  *
- * The loop parks itself when nothing is changing. A pet that idles at 2fps and
- * is stationary >70% of the time (design contract rule 4) should not keep a
- * 60Hz timer alive.
+ * The loop parks itself when nothing is changing. A pet standing still (30% of
+ * the time at the default activity; all of it with the slider at zero) idles
+ * at 2fps and should not keep a 60Hz timer alive while it does.
  */
 
 const ACTIVE_MS = 16;

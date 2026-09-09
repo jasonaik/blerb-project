@@ -183,17 +183,18 @@ describe('physics', () => {
 });
 
 describe('design contract', () => {
-  // Rule 4: stationary >=70% of wall-clock. Enforced in code, so tested.
-  it('keeps the pet stationary at least 70% of the time', () => {
-    const sim = createSim({ pack: testPack(), world: simpleWorld(800, 400), seed: 11 });
-    let moving = 0;
-    let total = 0;
+  // How much the pet moves is the user's knob (`activity`, its own suite
+  // above), not a contract rule. What IS pinned: a pet asked to keep still
+  // keeps still — at activity 0 it walks nowhere on its own, so a knob that
+  // says "leave me alone" really does.
+  it('at activity 0 the pet never walks on its own', () => {
+    const sim = createSim({ pack: testPack({ activity: 0 }), world: simpleWorld(800, 400), seed: 11 });
+    const x0 = sim.state.x;
     for (const dt of dtSequence(40_000)) {
       sim.step(dt);
-      total++;
-      if (Math.abs(sim.state.vx) > 0.5) moving++;
+      expect(sim.state.behavior).not.toBe('walk');
     }
-    expect(moving / total).toBeLessThan(0.3);
+    expect(sim.state.x).toBe(x0);
   });
 
   it('does not move at all while hidden', () => {
@@ -361,12 +362,99 @@ describe('interact (hover)', () => {
   });
 });
 
+describe('activity — the share of time on the move', () => {
+  /**
+   * Flat floor, no climbing: the only way to move is to decide to walk. The
+   * share is measured the way the pet experiences it — sim time in `walk`
+   * over sim time — across a run long enough (~35 sim-minutes) for several
+   * hundred decisions.
+   */
+  const walkShare = (behavior: Record<string, unknown>, seed: number, steps = 120_000) => {
+    const sim = createSim({
+      pack: testPack({ can: { climb: false, hang: false }, ...behavior }),
+      world: simpleWorld(800, 400),
+      seed,
+    });
+    let walking = 0;
+    let total = 0;
+    for (const dt of dtSequence(steps)) {
+      sim.step(dt);
+      total += dt;
+      if (sim.state.behavior === 'walk') walking += dt;
+    }
+    return walking / total;
+  };
+  const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+
+  it('walks about 70% of the time by default', () => {
+    const shares = [3, 4, 5].map((seed) => walkShare({}, seed));
+    for (const s of shares) expect(s).toBeGreaterThan(0.58);
+    for (const s of shares) expect(s).toBeLessThan(0.82);
+    expect(mean(shares)).toBeGreaterThan(0.64);
+    expect(mean(shares)).toBeLessThan(0.76);
+  });
+
+  it('follows the knob — 0.3 is the old, mostly-stationary pet', () => {
+    const shares = [3, 4, 5].map((seed) => walkShare({ activity: 0.3 }, seed));
+    expect(mean(shares)).toBeGreaterThan(0.24);
+    expect(mean(shares)).toBeLessThan(0.36);
+  });
+
+  it('is a share of TIME, not of decisions: long sleeps do not eat it', () => {
+    // A pack whose stationary time is almost all 12–30s sleeps. Per decision
+    // the walk weight has to be huge to hold 70% of the clock; the derivation
+    // accounts for that, a naive 7:3 weight would not.
+    const shares = [3, 4, 5].map((seed) =>
+      walkShare({ activity: 0.7, idleWeights: { idle: 1, sleep: 50 } }, seed, 200_000),
+    );
+    expect(mean(shares)).toBeGreaterThan(0.62);
+    expect(mean(shares)).toBeLessThan(0.78);
+  });
+
+  it('0 never walks on its own; 1 never stops', () => {
+    expect(walkShare({ activity: 0 }, 9, 30_000)).toBe(0);
+    // Not "mostly": from its first decision on, EVERY step is a walk step.
+    // Turning at a wall is instantaneous and a walk bout is followed by a
+    // walk bout; the only non-walk time is the 1.5s idle the sim starts in.
+    // Half an hour of sim time — long enough that a "99%" pet (a clamp, or a
+    // huge finite weight instead of dropping the stationary menu) takes a
+    // break in it.
+    const sim = createSim({
+      pack: testPack({ activity: 1, can: { climb: false, hang: false } }),
+      world: simpleWorld(800, 400),
+      seed: 9,
+    });
+    let walked = false;
+    for (const dt of dtSequence(120_000)) {
+      sim.step(dt);
+      if (sim.state.behavior === 'walk') walked = true;
+      if (walked) expect(sim.state.behavior).toBe('walk');
+    }
+    expect(walked).toBe(true);
+  });
+
+  it('holds for a pack that zeroed every stationary weight — the knob never collapses into always-walk', () => {
+    // idleWeights: {} is all-zero (the schema default only fills an ABSENT
+    // key). With nothing to stand against, any activity in (0, 1) would mean
+    // "walk"; the sim lends such a pack a unit idle instead.
+    const shares = [3, 4, 5].map((seed) => walkShare({ activity: 0.3, idleWeights: {} }, seed));
+    expect(mean(shares)).toBeGreaterThan(0.22);
+    expect(mean(shares)).toBeLessThan(0.38);
+  });
+
+  it('ignores a walk key in idleWeights — activity is the one knob', () => {
+    const a = walkShare({ activity: 0.3, idleWeights: { idle: 6, walk: 400 } }, 11);
+    const b = walkShare({ activity: 0.3, idleWeights: { idle: 6 } }, 11);
+    expect(a).toBe(b);
+  });
+});
+
 describe('surprise', () => {
   const surpriseAnim = { surprise: { fps: 3, frames: [0, 1] } };
 
   it('springs the pack\'s surprise animation now and then, for a few seconds, standing still', () => {
     const sim = createSim({
-      pack: testPack({ idleWeights: { idle: 6, walk: 4, surprise: 6 } }, surpriseAnim),
+      pack: testPack({ activity: 0.3, idleWeights: { idle: 6, surprise: 6 } }, surpriseAnim),
       world: simpleWorld(800, 400),
       seed: 23,
     });
@@ -407,23 +495,37 @@ describe('surprise', () => {
     }
   });
 
-  it('is rare by default — a flourish every few minutes, not a tic', () => {
-    // Documented rate: SURPRISE_WEIGHT / 14.25 ≈ 1.75% of decisions, so about
-    // that share of time. Averaged over seeds so an rng-order change on an
-    // unrelated edit cannot flip it; the bound is tight enough that doubling
-    // the weight fails it.
-    let surprised = 0;
-    let total = 0;
-    for (const seed of [29, 30, 31, 32]) {
-      const sim = createSim({ pack: testPack({}, surpriseAnim), world: simpleWorld(800, 400), seed });
-      for (const dt of dtSequence(200_000)) {
-        sim.step(dt);
-        total += dt;
-        if (sim.state.behavior === 'surprise') surprised += dt;
+  it('is rare by default — a flourish every eight minutes or so, not a tic — at any activity', () => {
+    // Documented rate: SURPRISE_SHARE = 1.2% of ground time, derived per
+    // decision like the walk weight so the slider does not move it. Flat
+    // floor, no climbing, so every second is ground time. Averaged over seeds
+    // so an rng-order change on an unrelated edit cannot flip it; the band
+    // fails a rate half or double the documented one, at both ends.
+    for (const activity of [0.3, 0.7]) {
+      let surprised = 0;
+      let total = 0;
+      let bouts = 0;
+      for (const seed of [29, 30, 31, 32]) {
+        const sim = createSim({
+          pack: testPack({ activity, can: { climb: false, hang: false } }, surpriseAnim),
+          world: simpleWorld(800, 400),
+          seed,
+        });
+        let prev = '';
+        for (const dt of dtSequence(200_000)) {
+          sim.step(dt);
+          total += dt;
+          if (sim.state.behavior === 'surprise') {
+            surprised += dt;
+            if (prev !== 'surprise') bouts++;
+          }
+          prev = sim.state.behavior;
+        }
       }
+      expect(bouts).toBeGreaterThanOrEqual(6);
+      expect(surprised / total).toBeGreaterThan(0.006);
+      expect(surprised / total).toBeLessThan(0.022);
     }
-    expect(surprised).toBeGreaterThan(0);
-    expect(surprised / total).toBeLessThan(0.03);
   });
 
   it('fires for a surprise PROVIDED by an alias to real art — never through the idle fallback', () => {
@@ -476,7 +578,7 @@ describe('surprise', () => {
   // dice, not a schedule — wide spread, and no gap predicting the next.
   it('rule 6: gaps between surprises are randomised, never periodic', () => {
     const sim = createSim({
-      pack: testPack({ idleWeights: { idle: 6, walk: 4, surprise: 2 } }, surpriseAnim),
+      pack: testPack({ activity: 0.3, idleWeights: { idle: 6, surprise: 2 } }, surpriseAnim),
       world: simpleWorld(800, 400),
       seed: 43,
     });
@@ -632,7 +734,9 @@ describe('climbing', () => {
   it('prefers the ground when dropped into the bottom corner', () => {
     // Every drop near the floor is also near the wall. Silently pasting the
     // pet to the edge when the user aimed at the floor is the worse failure.
-    const sim = createSim({ pack: testPack(), world: simpleWorld(800, 400), seed: 65 });
+    // Activity 0: this is about where it LANDS, not whether it then decides
+    // to walk the 6px into the wall and climb.
+    const sim = createSim({ pack: testPack({ activity: 0 }), world: simpleWorld(800, 400), seed: 65 });
     sim.dispatch({ k: 'command', name: 'place', x: 794, y: 392 });
 
     expect(sim.state.climbingOn).toBeNull();
@@ -923,6 +1027,152 @@ describe('windows as places', () => {
   });
 });
 
+describe('falling past walls', () => {
+  // An interior wall — a pinned window's side, say — a little past where a
+  // drifting fall starts. `side: -1`: the pet belongs on the left of it.
+  const wallWorld = (wallY1: number): World => ({
+    rev: 1,
+    bounds: { x: 0, y: 0, w: 800, h: 400 },
+    regions: [{ x: 0, y: 0, w: 800, h: 400 }],
+    platforms: [{ id: 'floor', x0: 0, x1: 800, y: 400, kind: 'floor', passthrough: false }],
+    walls: [{ id: 'iw', x: 500, y0: 250, y1: wallY1, side: -1 }],
+    ceilings: [],
+    gravity: 900,
+    reducedMotion: false,
+  });
+
+  /**
+   * A drifting fall, deterministically: drop the pet in mid-air and call it
+   * over. `come-here` sets a walk velocity even on an airborne pet, which is
+   * the one way to give a fall sideways speed on demand — asserted, so that
+   * a change to come-here fails here loudly instead of quietly leaving the
+   * tests below exercising a fall with no drift in it.
+   */
+  function driftingFall(world: World, seed = 3) {
+    const sim = createSim({ pack: testPack({ can: { climb: false, hang: false } }), world, seed });
+    sim.dispatch({ k: 'command', name: 'place', x: 470, y: 100 });
+    expect(sim.state.standingOn).toBeNull();
+    sim.dispatch({ k: 'command', name: 'come-here', x: 1e6 });
+    expect(sim.state.vx).toBeGreaterThan(0);
+    return sim;
+  }
+
+  it('a fall does not pass through a wall', () => {
+    const sim = driftingFall(wallWorld(400));
+    let stoppedInAir = false;
+    for (let i = 0; i < 400; i++) {
+      sim.step(4);
+      expect(sim.state.x).toBeLessThanOrEqual(500);
+      if (sim.state.x === 500 && sim.state.standingOn === null) stoppedInAir = true;
+      if (sim.state.standingOn !== null) break;
+    }
+    // Met the wall in the air — not merely landed short of it — and dropped
+    // straight down from there.
+    expect(stoppedInAir).toBe(true);
+    expect(sim.state.standingOn).toBe('floor');
+    expect(sim.state.x).toBe(500);
+  });
+
+  it("nor through the bottom corner, in the tick that passes the wall's foot", () => {
+    // A terrarium's side wall ends exactly on its floor line, so the tick
+    // that passes the floor is the one that used to slip out: the end-point
+    // check saw the pet below the wall's foot and ignored the wall while the
+    // sideways part of that same tick crossed it. Find the substep in which
+    // the drift crosses x=500 (4ms calls, so one substep at a time), then
+    // put the wall's foot inside its vertical travel.
+    const probe = driftingFall(wallWorld(400));
+    let crossing: { yLo: number; yHi: number } | null = null;
+    for (let i = 0; i < 400 && crossing === null; i++) {
+      const before = { x: probe.state.x, y: probe.state.y };
+      probe.step(4);
+      if (before.x < 500 && probe.state.x === 500) crossing = { yLo: before.y, yHi: probe.state.y };
+      if (probe.state.standingOn !== null) break;
+    }
+    expect(crossing).not.toBeNull();
+    expect(crossing!.yHi).toBeGreaterThan(crossing!.yLo);
+
+    const sim = driftingFall(wallWorld((crossing!.yLo + crossing!.yHi) / 2));
+    for (let i = 0; i < 400; i++) {
+      sim.step(4);
+      expect(sim.state.x).toBeLessThanOrEqual(500);
+      if (sim.state.standingOn !== null) break;
+    }
+    expect(sim.state.x).toBe(500);
+  });
+
+  it('a pet stopped by a wall mid-fall cannot be pushed out through it', () => {
+    // The check itself leaves the pet ON the line. A step that starts there
+    // and moves to the far side has no sign change to detect, so it needs
+    // its own rule — `side` says which way is out.
+    const sim = driftingFall(wallWorld(400));
+    let pushed = false;
+    for (let i = 0; i < 400; i++) {
+      sim.step(4);
+      if (!pushed && sim.state.x === 500 && sim.state.standingOn === null) {
+        sim.dispatch({ k: 'command', name: 'come-here', x: 1e6 });
+        expect(sim.state.vx).toBeGreaterThan(0);
+        pushed = true;
+      }
+      expect(sim.state.x).toBeLessThanOrEqual(500);
+      if (sim.state.standingOn !== null) break;
+    }
+    expect(pushed).toBe(true);
+    expect(sim.state.standingOn).toBe('floor');
+  });
+
+  it('letting go of a ceiling that vanished or slid away is a straight drop', () => {
+    // Hanging carries a sideways speed. Every release must shed it — the
+    // timed one and the ceiling's end do so in stepHang; these two happen in
+    // reconcileWorld, where the drift used to survive and glide the pet
+    // sideways through the fall.
+    const world: World = {
+      rev: 1,
+      bounds: { x: 0, y: 0, w: 800, h: 400 },
+      regions: [{ x: 0, y: 0, w: 800, h: 400 }],
+      platforms: [{ id: 'floor', x0: 0, x1: 800, y: 400, kind: 'floor', passthrough: false }],
+      walls: [],
+      ceilings: [{ id: 'winTop', x0: 200, x1: 500, y: 120, ownerX: 200 }],
+      gravity: 900,
+      reducedMotion: false,
+    };
+    const hangingAndMoving = (seed: number) => {
+      const sim = createSim({ pack: testPack(), world, seed });
+      for (let attempt = 0; attempt < 20; attempt++) {
+        sim.dispatch({ k: 'command', name: 'place', x: 350, y: 130 });
+        expect(sim.state.hangingOn).toBe('winTop');
+        for (const dt of dtSequence(2000)) {
+          sim.step(dt);
+          if (sim.state.hangingOn === null) break; // let go on its own; hang it up again
+          if (sim.state.vx !== 0) return sim;
+        }
+      }
+      throw new Error('never got moving under the ceiling');
+    };
+
+    // The window closed.
+    const gone = hangingAndMoving(7);
+    const gx = gone.state.x;
+    gone.dispatch({ k: 'world', world: { ...world, rev: 2, ceilings: [] } });
+    expect(gone.state.behavior).toBe('fall');
+    expect(gone.state.vx).toBe(0);
+    for (const dt of dtSequence(30)) gone.step(dt);
+    expect(gone.state.x).toBe(gx);
+
+    // The window shrank, and the pet is past the end of what is left.
+    const slid = hangingAndMoving(8);
+    const sx = slid.state.x;
+    expect(sx).toBeGreaterThan(300);
+    slid.dispatch({
+      k: 'world',
+      world: { ...world, rev: 2, ceilings: [{ id: 'winTop', x0: 200, x1: 300, y: 120, ownerX: 200 }] },
+    });
+    expect(slid.state.behavior).toBe('fall');
+    expect(slid.state.vx).toBe(0);
+    for (const dt of dtSequence(30)) slid.step(dt);
+    expect(slid.state.x).toBe(sx);
+  });
+});
+
 describe('multi-display', () => {
   /**
    * A grounded pet must be on the ground it claims to be on.
@@ -1064,14 +1314,20 @@ describe('multi-display', () => {
     sim.dispatch({ k: 'command', name: 'come-here', x: 1e6 });
 
     let maxX = 0;
+    let onAtMax: string | null = null;
     for (const dt of dtSequence(3000)) {
       sim.step(dt);
-      maxX = Math.max(maxX, sim.state.x);
+      if (sim.state.x > maxX) {
+        maxX = sim.state.x;
+        onAtMax = sim.state.standingOn;
+      }
+      expect(sim.state.y).toBe(400); // never left the shared ground line
       expectRealGround(world, sim.state);
     }
     expect(maxX).toBeGreaterThan(830); // crossed the seam onto screen B
-    expect(sim.state.y).toBe(400); // and never left the shared ground line
-    expect(sim.state.standingOn).toBe('floor:B:0');
+    // ...and was standing on B's ground there, not A's stretched past the
+    // join. Where it wanders afterwards is its own business.
+    expect(onAtMax).toBe('floor:B:0');
   });
 
   it('climbs from the lower screen onto the one above it', () => {

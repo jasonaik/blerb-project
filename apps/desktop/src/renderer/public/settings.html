@@ -107,6 +107,13 @@
         <span class="val" id="petScaleVal">2×</span>
       </div>
       <div class="row">
+        <label for="activity">Activity
+          <span class="hint">How much of its time the pet spends on the move rather than standing about. 0% never walks on its own; 100% never stops.</span>
+        </label>
+        <input type="range" id="activity" min="0" max="100" step="5" />
+        <span class="val" id="activityVal">70%</span>
+      </div>
+      <div class="row">
         <label for="climbing">Can climb walls
           <span class="hint">Clings to the outer edges of the desktop, and climbs between stacked monitors.</span>
         </label>
@@ -173,6 +180,11 @@
         for (const k of bools) $(k).checked = s[k];
         $('petScale').value = s.petScale;
         $('petScaleVal').textContent = s.petScale + '×';
+        // Stored as a share (0.7); shown as a percentage. Don't yank the thumb
+        // out from under a drag in progress — the echo of our own set() lands
+        // while the pointer is still down.
+        if (document.activeElement !== $('activity')) $('activity').value = Math.round(s.activity * 100);
+        $('activityVal').textContent = Math.round(s.activity * 100) + '%';
         if ([...$('pack').options].some((o) => o.value === s.pack)) $('pack').value = s.pack;
         classification = s.classification || { focus: [], elsewhere: [] };
         // Never overwrite a list the user is in the middle of typing.
@@ -283,6 +295,10 @@
       }
       $('petScale').addEventListener('input', (e) => {
         window.blerbSettings.set({ petScale: Number(e.target.value) });
+      });
+      $('activity').addEventListener('input', (e) => {
+        $('activityVal').textContent = e.target.value + '%';
+        window.blerbSettings.set({ activity: Number(e.target.value) / 100 });
       });
       $('quit').addEventListener('click', () => window.blerbSettings.quit());
     </script>

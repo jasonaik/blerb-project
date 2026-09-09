@@ -205,9 +205,10 @@ export interface PetState {
   odometer: number;
 
   /**
-   * Exponential moving average of "is moving", 0..1.
-   * Design contract rule 4 — stationary >=70% of wall-clock — is enforced from
-   * this, in code, rather than left as an aspiration in a doc.
+   * Exponential moving average of "is moving", 0..1, ~30s of memory. A
+   * DIAGNOSTIC: the preview HUD shows it beside the pack's `activity`, and
+   * nothing in the sim decides on it — how much the pet moves is the
+   * activity knob, derived into the picker's weights. Never persisted.
    */
   motionEma: number;
 

@@ -59,6 +59,7 @@ Open it from the **tray icon → Settings…**, by **double-clicking the tray ic
 | Invisible in screen capture | **on** | Sets `WDA_EXCLUDEFROMCAPTURE`. Windows itself keeps the pet out of screen shares and recordings while leaving it visible to you. |
 | Start with Windows | off | Standard login item. |
 | Pet size | 2× | 1–4×. Integer scales only, because the art is pixel art. |
+| Activity | 70% | How much of its time the pet spends on the move rather than standing, sitting or sleeping. It's a share of *time*, not of decisions — the app works out the odds so that a pet with long naps still walks 70% of the clock. 0% never walks on its own (it still climbs down off things and answers a touch); 100% never stops. |
 | Can climb walls | on | Whether the pet clings to and climbs the outer edges of the desktop. |
 | Can hang upside down | on | Whether it hangs under the top edge of a window, or the top of the screen, and walks along upside down. |
 | Follow moving windows smoothly | on | Watches the desktop ~60×/s while you drag or resize a window, instead of ~3×/s, so the pet rides it rather than jumping after it. Costs about 1% of one CPU core, and only while something is actually moving. Turn it off if you want the app as close to free as possible. |

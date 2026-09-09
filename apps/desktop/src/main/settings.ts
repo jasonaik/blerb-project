@@ -13,9 +13,19 @@ export const DEFAULTS: Settings = {
   hanging: true,
   smoothTracking: true,
   petScale: 2,
+  activity: 0.7,
   pack: 'blob',
   classification: { focus: [], elsewhere: [] },
 };
+
+/**
+ * A number in [0, 1], or the fallback. settings.json is hand-editable and
+ * the IPC patch is untrusted, so a string, NaN or 70 (percent, not a share)
+ * must not reach the sim — the walk weight is derived by division on it.
+ */
+export function unitInterval(x: unknown, fallback: number): number {
+  return typeof x === 'number' && Number.isFinite(x) ? Math.min(1, Math.max(0, x)) : fallback;
+}
 
 const file = () => join(app.getPath('userData'), 'settings.json');
 
@@ -54,6 +64,7 @@ export function loadSettings(): Settings {
     const raw = JSON.parse(readFileSync(file(), 'utf8')) as Partial<Settings>;
     const s = { ...DEFAULTS, ...raw };
     s.classification = sanitizeClassification(raw.classification ?? DEFAULTS.classification);
+    s.activity = unitInterval(raw.activity, DEFAULTS.activity);
     return s;
   } catch {
     return { ...DEFAULTS };

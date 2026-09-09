@@ -179,7 +179,7 @@ async function main(): Promise<void> {
       `anim     ${s.anim} -> ${frame.cellId}`,
       `pos      ${s.x.toFixed(1)}, ${s.y.toFixed(1)}  facing ${s.facing > 0 ? '>' : '<'}`,
       `on       ${s.standingOn ?? '(air)'}`,
-      `moving   ${(s.motionEma * 100).toFixed(0)}%  budget 30%`,
+      `moving   ${(s.motionEma * 100).toFixed(0)}%  activity ${(pack.behavior.activity * 100).toFixed(0)}%`,
       `odometer ${s.odometer.toFixed(0)}px`,
       debug ? 'debug    on' : 'debug    off  (press d)',
     ].join('\n');
